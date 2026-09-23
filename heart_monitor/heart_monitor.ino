@@ -39,32 +39,49 @@ MAX30105 sensor;
 
 // Sensor: 400 samples/s, averaged 4 at a time inside the MAX30102, so we get
 // 100 clean samples per second (one every 10 ms).
-const byte LED_POWER = 0x1F;          // ~6.4 mA, same for Red and IR (keeps SpO2 math simple)
+const byte LED_POWER = 0x1F;          // starting LED current (~6.4 mA); auto-tuned per finger
 const byte SAMPLE_AVERAGE = 4;
 const int SENSOR_SAMPLE_RATE = 400;
+const int ADC_RANGE = 4096;           // use 8192 or 16384 if IR is still near 262143 at low current
 const unsigned int SAMPLE_MS = 10;    // 1000 / (400 / 4)
 
-// Finger detection. The Serial Monitor prints "IR=" every second while it
-// waits for a finger; adjust if your module reads very differently.
+// Sensor clock correction = "sensor ms / real ms" from the summary,
+// averaged over 3-4 runs. Leave at 1.000 if they differ by less than 0.5%.
+const float CLOCK_FIX = 1.000;
+
+// LED auto-tune: aim for a raw level of 100,000 - 200,000 (ADC max 262,143).
+const long DC_LOW = 100000;
+const long DC_HIGH = 200000;
+const long DC_TARGET = 150000;
+const long SATURATION_LEVEL = 260000; // above this the pulse top is clipped
+const byte LED_MIN = 0x04;
+const byte LED_MAX = 0xF0;
+const byte MAX_TUNE_STEPS = 6;        // per measurement
+
+// Finger detection (at the starting LED current). The Serial Monitor prints
+// "IR=" every second while it waits; set these well above the no-finger value.
 const long FINGER_ON_LEVEL = 20000;
-const long FINGER_OFF_LEVEL = 12000;
+const long FINGER_OFF_LEVEL = 12000;  // scaled automatically when the LED current changes
 const byte FINGER_ON_SAMPLES = 10;    // 0.10 s above ON level before we start
 const byte FINGER_OFF_SAMPLES = 25;   // 0.25 s below OFF level before we give up
 
 // Beat detection
 const unsigned int SETTLE_MS = 1500;          // ignore the first moments while the finger settles
 const float DC_ALPHA = 0.02;                  // slow baseline (removes drift / finger pressure)
-const float LP_ALPHA = 0.25;                  // smoothing (removes noise)
 const float MIN_HYSTERESIS = 40;              // smallest swing that counts as a turn in the wave
 const float MIN_PULSE_AMPLITUDE = 80;         // smallest valley-to-peak that counts as a beat
+const float MIN_PERFUSION = 0.2;              // % (pulse / DC). Weaker beats can't be timed reliably
+const float MOTION_LIMIT = 0.02;              // baseline jump of 2% within 0.5 s = finger moved
+const unsigned int MOTION_PAUSE_MS = 1000;
 const unsigned int MIN_BEAT_INTERVAL = 300;   // 200 BPM
 const unsigned int MAX_BEAT_INTERVAL = 1500;  // 40 BPM
 const unsigned int SIGNAL_LOST_MS = 3000;     // no beat for this long -> show "--" and re-learn
 const float INTERVAL_TOLERANCE = 0.25;        // beat interval may differ 25% from the median
+const byte REJECT_WARN_PERCENT = 15;          // above this: "irregular or noisy signal"
 
 // SpO2 = SPO2_A - SPO2_B * R   (R = ratio of Red to IR pulse strength)
-// 110 - 25*R is the standard textbook approximation. To calibrate against a
-// real fingertip oximeter: SPO2_A = realSpO2 + 25 * R (R is printed every second).
+// Calibrate: SPO2_A = oximeterSpO2 + 25 * R (R = "Average R" in the summary),
+// averaged over 10+ sessions. See the README.
 const float SPO2_A = 110.0;
 const float SPO2_B = 25.0;
 const byte SPO2_MIN_BEATS = 5;                // good beats needed before SpO2 is shown
@@ -73,6 +90,11 @@ const byte SPO2_MIN_BEATS = 5;                // good beats needed before SpO2 i
 const unsigned long HALF_WINDOW = 30000;
 const unsigned long MEASURE_WINDOW = 60000;
 const unsigned long DISPLAY_INTERVAL = 100;   // screen animation (numbers change once per second)
+
+// MAX30102 registers used for direct FIFO reading
+const byte MAX_ADDR = 0x57;
+const byte REG_OVF_COUNTER = 0x05;
+const byte REG_FIFO_DATA = 0x07;
 
 // =====================================================
 // STATE
@@ -89,10 +111,16 @@ bool halfDone = false;
 bool measurementDone = false;
 int average30 = 0;
 int average60 = 0;
-unsigned long intervalSumA = 0;   // beats in 0-30 s
-unsigned int beatCountA = 0;
-unsigned long intervalSumAll = 0; // beats in 0-60 s
-unsigned int beatCountAll = 0;
+unsigned long intervalSumA = 0;   // intervals in 0-30 s
+unsigned int intervalCountA = 0;
+unsigned long intervalSumAll = 0; // intervals in 0-60 s
+unsigned int intervalCountAll = 0;
+
+// Quality counters for the 60 s summary
+unsigned int beatsAccepted = 0;
+unsigned int beatsRejected = 0;
+unsigned int intervalsRejected = 0;
+unsigned int motionEvents = 0;
 
 // Values shown on screen / Serial, refreshed exactly once per second
 unsigned long lastSecond = 0;
@@ -102,19 +130,45 @@ int minBPM = 0, maxBPM = 0;
 long spo2Sum = 0;
 unsigned int spo2Seconds = 0;
 unsigned int bpmSeconds = 0;
+float ratioSum = 0;
 
 int currentSpO2 = 0;
+float lastPerfusion = 0;
 
 // Time base built from the sensor's own sample rate, so beat timing stays
 // exact even while the display is busy.
 unsigned long sampleClock = 0;
+unsigned long sampleClockStart = 0;
+unsigned long samplesUsed = 0;
+unsigned long samplesLost = 0;
 uint32_t lastIR = 0;
+
+// LED currents (tuned separately; the SpO2 math divides each by its own DC)
+byte irPower = LED_POWER;
+byte redPower = LED_POWER;
+bool ledDirty = false;
+byte tuneSteps = 0;
+byte tuneTick = 0;
+byte tuneHold = 0;
+byte clipRun = 0;
 
 // Filters
 bool filtersReady = false;
 float irDC = 0, redDC = 0;   // baselines
-float irAC = 0, redAC = 0;   // pulse signal (baseline removed, smoothed, flipped so beats point up)
+float irAC = 0, redAC = 0;   // pulse signal (baseline removed, filtered, flipped so beats point up)
+float irLP[4], redLP[4];     // Butterworth filter memory {x1, x2, y1, y2}
 unsigned long settleUntil = 0;
+
+// Motion check: baseline history, one value every 100 ms (0.5 s total)
+#define DC_HIST 5
+float dcHist[DC_HIST];
+byte dcHistHead = 0;
+byte motionTick = 0;
+unsigned long motionUntil = 0;
+bool inMotion = false;
+
+unsigned long lastClipTime = 0;
+unsigned long lastWeakTime = 0;
 
 // Peak / valley detector (with hysteresis)
 bool lookingForPeak = true;
@@ -201,6 +255,19 @@ void appendInt(char *buf, long v) {
   strcat(buf, tmp);
 }
 
+// 2nd-order Butterworth low-pass, 5 Hz at 100 samples/s. Much steeper than
+// simple smoothing, and its delay is constant, so beat intervals are unchanged.
+// s[] = {x1, x2, y1, y2}
+float lowPass(float x, float *s) {
+  float y = 0.0200834 * x + 0.0401667 * s[0] + 0.0200834 * s[1]
+          + 1.5610181 * s[2] - 0.6413515 * s[3];
+  s[1] = s[0];
+  s[0] = x;
+  s[3] = s[2];
+  s[2] = y;
+  return y;
+}
+
 // =====================================================
 // RESET / START
 // =====================================================
@@ -218,26 +285,40 @@ void clearIntervals() {
   outlierStreak = 0;
 }
 
+// Start looking for beats from scratch without trusting the last beat time
+// (used after motion, lost samples or an LED change).
+void resetBeatChain() {
+  lookingForPeak = true;
+  haveValley = false;
+  extremeIR = irAC;
+  extremeRed = redAC;
+  maxSlope = 0;
+  needSlopeAfter = false;
+  lastBeatTime = 0;
+}
+
 void resetDetector() {
   filtersReady = false;
   irDC = redDC = 0;
   irAC = redAC = 0;
 
-  lookingForPeak = true;
-  haveValley = false;
-  extremeIR = 0;
+  resetBeatChain();
   valleyIR = 0;
-  extremeRed = valleyRed = 0;
+  valleyRed = 0;
   pulseAmplitude = 0;
-  lastBeatTime = 0;
   lastActivity = sampleClock;
 
   prevIrAC = 0;
   prevSlope = 0;
-  maxSlope = 0;
   slopeBeforeMax = slopeAfterMax = 0;
   maxSlopeTime = 0;
-  needSlopeAfter = false;
+
+  motionUntil = 0;
+  inMotion = false;
+  lastClipTime = 0;
+  lastWeakTime = 0;
+  lastPerfusion = 0;
+  clipRun = 0;
 
   clearIntervals();
   clearRatios();
@@ -254,9 +335,14 @@ void resetMeasurement() {
   average30 = 0;
   average60 = 0;
   intervalSumA = 0;
-  beatCountA = 0;
+  intervalCountA = 0;
   intervalSumAll = 0;
-  beatCountAll = 0;
+  intervalCountAll = 0;
+
+  beatsAccepted = 0;
+  beatsRejected = 0;
+  intervalsRejected = 0;
+  motionEvents = 0;
 
   lastSecond = 0;
   shownBPM = 0;
@@ -265,6 +351,16 @@ void resetMeasurement() {
   spo2Sum = 0;
   spo2Seconds = 0;
   bpmSeconds = 0;
+  ratioSum = 0;
+
+  // Back to the starting LED current so the finger thresholds are valid.
+  if (irPower != LED_POWER || redPower != LED_POWER) {
+    irPower = redPower = LED_POWER;
+    ledDirty = true;
+  }
+  tuneSteps = 0;
+  tuneTick = 0;
+  tuneHold = 0;
 
   heartFlash = false;
   noTone(BUZZER_PIN);
@@ -277,9 +373,12 @@ void startMeasurement() {
   resetMeasurement();
   fingerPresent = true;
   measurementStart = millis();
+  samplesUsed = 0;
+  samplesLost = 0;
   Serial.println();
   Serial.println(F("FINGER DETECTED - 60 s MEASUREMENT STARTED"));
-  Serial.println(F("time   BPM   SpO2   R"));
+  Serial.println(F("time   BPM   SpO2   R       PI"));
+  sampleClockStart = sampleClock;
 }
 
 // Heart rhythm lost (moved finger, pressed too hard...). Show "--" instead of
@@ -290,6 +389,42 @@ void signalLost() {
   lastActivity = sampleClock;
   clearIntervals();
   clearRatios();
+}
+
+// =====================================================
+// LED AUTO-TUNE (only while the signal settles)
+// =====================================================
+
+bool tuneOne(uint32_t level, byte &power) {
+  if ((long)level >= DC_LOW && (long)level <= DC_HIGH) return false;
+  long p = (long)power * DC_TARGET / (long)(level > 0 ? level : 1);
+  if (p < LED_MIN) p = LED_MIN;
+  if (p > LED_MAX) p = LED_MAX;
+  if (p == power) return false;
+  power = (byte)p;
+  return true;
+}
+
+// Returns true if an LED current was changed. The new current is sent to the
+// sensor from pumpSensor(), never in the middle of reading a FIFO block.
+bool tuneLeds(uint32_t ir, uint32_t red) {
+  if (tuneSteps >= MAX_TUNE_STEPS) return false;
+  bool changed = tuneOne(ir, irPower);
+  if (tuneOne(red, redPower)) changed = true;
+  if (!changed) return false;
+
+  tuneSteps++;
+  ledDirty = true;
+  tuneHold = 8;           // skip samples that were taken with the old current
+  filtersReady = false;   // restart baseline + settle time at the new level
+  return true;
+}
+
+void applyLeds() {
+  if (!ledDirty) return;
+  ledDirty = false;
+  sensor.setPulseAmplitudeIR(irPower);
+  sensor.setPulseAmplitudeRed(redPower);
 }
 
 // =====================================================
@@ -377,6 +512,12 @@ unsigned int medianInterval() {
   return sorted[ibiCount / 2];
 }
 
+// Average BPM from a total of intervals, with the sensor clock correction.
+int bpmFrom(unsigned long intervalSum, unsigned int count) {
+  if (intervalSum == 0) return 0;
+  return (int)(60000.0 * count / intervalSum * CLOCK_FIX + 0.5);
+}
+
 // Heart rate from the last (up to) 8 good beat intervals. With 5 or more,
 // the shortest and longest are dropped first (trimmed mean), so one slightly
 // mistimed beat can't pull the number.
@@ -394,8 +535,7 @@ int computeBPM() {
   }
   unsigned long sum = 0;
   for (byte i = first; i < last; i++) sum += sorted[i];
-  byte n = last - first;
-  return (int)((60000UL * n + sum / 2) / sum);
+  return bpmFrom(sum, last - first);
 }
 
 void addInterval(unsigned int interval) {
@@ -406,7 +546,10 @@ void addInterval(unsigned int interval) {
     unsigned int diff = (interval > med) ? interval - med : med - interval;
     if (diff > med * INTERVAL_TOLERANCE) {
       outlierStreak++;
-      if (outlierStreak < 3) return;
+      if (outlierStreak < 3) {
+        if (!measurementDone) intervalsRejected++;
+        return;
+      }
       clearIntervals();
     }
   }
@@ -416,34 +559,61 @@ void addInterval(unsigned int interval) {
   ibiHead = (ibiHead + 1) % IBI_SIZE;
   if (ibiCount < IBI_SIZE) ibiCount++;
 
-  // Official 30 s / 60 s averages only use beats that passed every check.
+  // Official 30 s / 60 s averages only use intervals that passed every check.
   if (!measurementDone) {
     unsigned long elapsed = millis() - measurementStart;
     if (elapsed < HALF_WINDOW) {
       intervalSumA += interval;
-      beatCountA++;
+      intervalCountA++;
     }
     if (elapsed < MEASURE_WINDOW) {
       intervalSumAll += interval;
-      beatCountAll++;
+      intervalCountAll++;
     }
   }
+}
+
+void rejectBeat() {
+  if (!measurementDone) beatsRejected++;
 }
 
 // A full pulse was found in the IR signal. beatTime is the precise moment of
 // its steepest upstroke.
 void onPulse(float amplitude, float redAmplitude, unsigned long beatTime) {
-  if (amplitude < MIN_PULSE_AMPLITUDE) return;
+  if (amplitude < MIN_PULSE_AMPLITUDE) return;   // noise, not a beat
 
-  // Second bump of the same heartbeat (dicrotic notch) or noise.
-  if (lastBeatTime != 0 && beatTime - lastBeatTime < MIN_BEAT_INTERVAL) return;
+  // Second bump of the same heartbeat (dicrotic notch) or noise. Once the
+  // rhythm is known, anything sooner than 60% of the usual interval is ignored.
+  if (lastBeatTime != 0) {
+    unsigned long since = beatTime - lastBeatTime;
+    if (since < MIN_BEAT_INTERVAL) return;
+    if (ibiCount >= 3 && since < medianInterval() * 0.6) return;
+  }
+
+  // Pulse top was clipped by the ADC: the timing can't be trusted.
+  if (lastClipTime != 0 && sampleClock - lastClipTime < 1000) {
+    rejectBeat();
+    return;
+  }
+
+  // Perfusion index: how big the pulse is compared to the steady light level.
+  lastPerfusion = amplitude / irDC * 100.0;
+  if (lastPerfusion < MIN_PERFUSION) {
+    lastWeakTime = sampleClock;
+    rejectBeat();
+    return;
+  }
 
   // Much bigger or smaller than the usual beat = finger movement.
   if (pulseAmplitude > 0 &&
-      (amplitude > pulseAmplitude * 3 || amplitude < pulseAmplitude * 0.3)) return;
+      (amplitude > pulseAmplitude * 3 || amplitude < pulseAmplitude * 0.3)) {
+    rejectBeat();
+    return;
+  }
 
   pulseAmplitude = (pulseAmplitude == 0) ? amplitude : pulseAmplitude * 0.8 + amplitude * 0.2;
   lastActivity = sampleClock;
+  if (!measurementDone) beatsAccepted++;
 
   beatFeedback();
   updateSpO2(amplitude, redAmplitude);
@@ -456,8 +626,8 @@ void onPulse(float amplitude, float redAmplitude, unsigned long beatTime) {
   unsigned long interval = beatTime - lastBeatTime;
   lastBeatTime = beatTime;
 
-  // A gap of about 2 or 3 normal beats means weak beats in between were not
-  // detected. Split it into the missed beats instead of throwing it away
+  // A gap of about 2 or 3 normal beats means beats in between were missed or
+  // rejected. Split it into the missed beats instead of throwing it away
   // (or worse, counting it as one very slow beat).
   if (ibiCount > 0) {
     unsigned int reference = medianInterval();
@@ -475,7 +645,11 @@ void onPulse(float amplitude, float redAmplitude, unsigned long beatTime) {
     return;
   }
 
-  if (interval <= MAX_BEAT_INTERVAL) addInterval((unsigned int)interval);
+  if (interval <= MAX_BEAT_INTERVAL) {
+    addInterval((unsigned int)interval);
+  } else if (!measurementDone) {
+    intervalsRejected++;
+  }
 }
 
 // =====================================================
@@ -483,12 +657,36 @@ void onPulse(float amplitude, float redAmplitude, unsigned long beatTime) {
 // =====================================================
 
 void processSample(uint32_t ir, uint32_t red) {
+  if (tuneHold > 0) {
+    tuneHold--;
+    return;
+  }
+
+  // Clipping check. If it lasts 0.5 s during the measurement, re-tune the LEDs.
+  if ((long)ir > SATURATION_LEVEL || (long)red > SATURATION_LEVEL) {
+    lastClipTime = sampleClock;
+    if (++clipRun >= 50 && filtersReady && (long)(sampleClock - settleUntil) >= 0 &&
+        tuneSteps < MAX_TUNE_STEPS) {
+      clipRun = 0;
+      tuneSteps++;
+      filtersReady = false;   // settle again, where the LEDs get re-tuned
+    }
+  } else {
+    clipRun = 0;
+  }
+
   if (!filtersReady) {
     irDC = ir;
     redDC = red;
     irAC = 0;
     redAC = 0;
     prevIrAC = 0;
+    for (byte i = 0; i < 4; i++) irLP[i] = redLP[i] = 0;
+    for (byte i = 0; i < DC_HIST; i++) dcHist[i] = ir;
+    dcHistHead = 0;
+    motionTick = 0;
+    tuneTick = 0;
+    resetBeatChain();
     filtersReady = true;
     settleUntil = sampleClock + SETTLE_MS;
     lastActivity = settleUntil;
@@ -499,9 +697,9 @@ void processSample(uint32_t ir, uint32_t red) {
   redDC += DC_ALPHA * ((float)red - redDC);
 
   // Blood absorbs light, so every heartbeat makes the reading DROP.
-  // Flip the sign so a heartbeat is an upward peak.
-  irAC += LP_ALPHA * ((irDC - (float)ir) - irAC);
-  redAC += LP_ALPHA * ((redDC - (float)red) - redAC);
+  // Flip the sign so a heartbeat is an upward peak, then low-pass filter.
+  irAC = lowPass(irDC - (float)ir, irLP);
+  redAC = lowPass(redDC - (float)red, redLP);
 
   float slope = irAC - prevIrAC;
   prevIrAC = irAC;
@@ -510,12 +708,53 @@ void processSample(uint32_t ir, uint32_t red) {
   Serial.println(irAC);
 #endif
 
+  // Baseline history for the motion check: one value every 100 ms (0.5 s kept).
+  bool motion = false;
+  if (++motionTick >= 10) {
+    motionTick = 0;
+    float old = dcHist[dcHistHead];
+    dcHist[dcHistHead] = irDC;
+    dcHistHead = (dcHistHead + 1) % DC_HIST;
+    motion = fabs(irDC - old) > MOTION_LIMIT * irDC;
+  }
+
+  // Settle phase: tune the LED currents (every 200 ms), no beat detection.
   if ((long)(sampleClock - settleUntil) < 0) {
     prevSlope = slope;
+    if (++tuneTick >= 20) {
+      tuneTick = 0;
+      tuneLeds(ir, red);
+    }
     return;
   }
 
   if ((long)(sampleClock - lastActivity) > (long)SIGNAL_LOST_MS) signalLost();
+
+  // Finger moved (baseline jumped more than 2% within 0.5 s): pause 1 s.
+  if (motion) {
+    if (!inMotion && !measurementDone) motionEvents++;
+    inMotion = true;
+    motionUntil = sampleClock + MOTION_PAUSE_MS;
+    resetBeatChain();
+  }
+  if ((long)(sampleClock - motionUntil) < 0) {
+    prevSlope = slope;
+    lastActivity = sampleClock;   // a motion pause is not "no pulse"
+    return;
+  }
+  if (inMotion) {
+    // Restart the baseline at the new finger position, so the leftover step
+    // from the move doesn't distort the next beats.
+    inMotion = false;
+    irDC = ir;
+    redDC = red;
+    irAC = redAC = prevIrAC = 0;
+    for (byte i = 0; i < 4; i++) irLP[i] = redLP[i] = 0;
+    for (byte i = 0; i < DC_HIST; i++) dcHist[i] = ir;
+    resetBeatChain();
+    prevSlope = 0;
+    return;
+  }
 
   // Track the steepest rise since the last valley (the pulse upstroke).
   if (needSlopeAfter) {
@@ -583,6 +822,7 @@ void processSample(uint32_t ir, uint32_t red) {
 
 void handleSample(uint32_t ir, uint32_t red) {
   sampleClock += SAMPLE_MS;
+  samplesUsed++;
   lastIR = ir;
 
   if (!fingerPresent) {
@@ -594,7 +834,9 @@ void handleSample(uint32_t ir, uint32_t red) {
     return;
   }
 
-  if ((long)ir < FINGER_OFF_LEVEL) {
+  // The no-finger level scales with the IR LED current.
+  long offLevel = FINGER_OFF_LEVEL * (long)irPower / LED_POWER;
+  if ((long)ir < offLevel) {
     if (++fingerOffCount >= FINGER_OFF_SAMPLES) {
       Serial.println(F("FINGER REMOVED"));
       resetMeasurement();
@@ -606,21 +848,60 @@ void handleSample(uint32_t ir, uint32_t red) {
   processSample(ir, red);
 }
 
-// Read EVERY new sample waiting in the sensor. The library only keeps 4 on a
-// Nano, so this is also called between the display's page transfers.
+// =====================================================
+// SENSOR READING
+// =====================================================
+
+uint32_t readValue18() {
+  uint32_t v = Wire.read();
+  v = (v << 8) | Wire.read();
+  v = (v << 8) | Wire.read();
+  return v & 0x3FFFF;
+}
+
+// Read EVERY sample waiting in the MAX30102's own 32-sample FIFO. We read it
+// directly instead of through the library, whose buffer only holds 4 samples
+// on a Nano and silently drops the rest. The chip's overflow counter tells us
+// if samples were ever lost (printed in the summary; it should stay 0).
 void pumpSensor() {
-  sensor.check();
-  while (sensor.available()) {
-    uint32_t ir = sensor.getFIFOIR();
-    uint32_t red = sensor.getFIFORed();
-    sensor.nextSample();
-    handleSample(ir, red);
+  byte lost = sensor.readRegister8(MAX_ADDR, REG_OVF_COUNTER);
+  byte n = (sensor.getWritePointer() - sensor.getReadPointer()) & 0x1F;
+  if (lost > 0) {
+    samplesLost += lost;
+    sampleClock += (unsigned long)lost * SAMPLE_MS;   // keep the time base correct
+    if (filtersReady) resetBeatChain();                // the gap breaks the current beat
+    if (n == 0) n = 32;                                // FIFO completely full
   }
+
+  while (n > 0) {
+    byte take = (n > 5) ? 5 : n;                       // 5 samples x 6 bytes fit the 32-byte Wire buffer
+    Wire.beginTransmission(MAX_ADDR);
+    Wire.write(REG_FIFO_DATA);
+    Wire.endTransmission();
+    Wire.requestFrom(MAX_ADDR, (byte)(take * 6));
+    for (byte i = 0; i < take; i++) {
+      uint32_t red = readValue18();
+      uint32_t ir = readValue18();
+      handleSample(ir, red);
+    }
+    n -= take;
+  }
+
+  applyLeds();
 }
 
 // =====================================================
 // ONCE-PER-SECOND UPDATE (screen numbers + Serial line)
 // =====================================================
+
+// Short status word for the screen and Serial ("" = signal is fine).
+const char *signalStatus() {
+  if (!filtersReady || (long)(sampleClock - settleUntil) < 0) return "WAIT";
+  if ((long)(sampleClock - motionUntil) < 0) return "MOTION";
+  if (lastClipTime != 0 && sampleClock - lastClipTime < 1000) return "CLIPPED";
+  if (lastWeakTime != 0 && sampleClock - lastWeakTime < 2000) return "WEAK";
+  return "";
+}
 
 void updateEverySecond(unsigned long second) {
   shownBPM = computeBPM();
@@ -635,6 +916,7 @@ void updateEverySecond(unsigned long second) {
   }
   if (shownSpO2 > 0) {
     spo2Sum += shownSpO2;
+    ratioSum += medianRatio;
     spo2Seconds++;
   }
 
@@ -652,35 +934,73 @@ void updateEverySecond(unsigned long second) {
   if (shownSpO2 > 0) {
     Serial.print(shownSpO2);
     Serial.print(F("%   "));
-    Serial.println(medianRatio, 3);
+    Serial.print(medianRatio, 3);
   } else {
-    Serial.println(F("--%"));
+    Serial.print(F("--%   -----"));
   }
+  Serial.print(F("   "));
+  Serial.print(lastPerfusion, 2);
+  Serial.print(F("%  "));
+  Serial.println(signalStatus());
 #endif
 }
 
 void printSummary() {
 #if !PLOT_SIGNAL
   Serial.println(F("---------- 60 s RESULT ----------"));
-  Serial.print(F("Average BPM (0-30 s): "));
+  Serial.print(F("HEART RATE (60 s average): "));
+  if (average60 > 0) {
+    Serial.print(average60);
+    Serial.println(F(" BPM"));
+  } else {
+    Serial.println(F("--"));
+  }
+  Serial.print(F("Average BPM (0-30 s):  "));
   if (average30 > 0) Serial.println(average30); else Serial.println(F("--"));
-  Serial.print(F("Average BPM (0-60 s): "));
-  if (average60 > 0) Serial.println(average60); else Serial.println(F("--"));
-  Serial.print(F("Beats counted:        "));
-  Serial.println(beatCountAll);
   if (bpmSeconds > 0) {
-    Serial.print(F("Lowest / highest BPM: "));
+    Serial.print(F("Lowest / highest BPM:  "));
     Serial.print(minBPM);
     Serial.print(F(" / "));
     Serial.println(maxBPM);
   }
-  Serial.print(F("Average SpO2:         "));
+  Serial.print(F("Average SpO2:          "));
   if (spo2Seconds > 0) {
     Serial.print((spo2Sum + spo2Seconds / 2) / spo2Seconds);
     Serial.println('%');
+    Serial.print(F("Average R:             "));
+    Serial.println(ratioSum / spo2Seconds, 3);
   } else {
     Serial.println(F("--"));
   }
+
+  Serial.println(F("-- signal quality --"));
+  Serial.print(F("Intervals used:        "));
+  Serial.println(intervalCountAll);
+  Serial.print(F("Beats accepted:        "));
+  Serial.println(beatsAccepted);
+  Serial.print(F("Rejected beats / ints: "));
+  Serial.print(beatsRejected);
+  Serial.print(F(" / "));
+  Serial.println(intervalsRejected);
+  Serial.print(F("Motion pauses:         "));
+  Serial.println(motionEvents);
+  unsigned int total = beatsAccepted + beatsRejected;
+  unsigned int rejected = beatsRejected + intervalsRejected;
+  if (total > 0 && (unsigned long)rejected * 100 > (unsigned long)total * REJECT_WARN_PERCENT) {
+    Serial.println(F("WARNING: irregular or noisy signal"));
+  }
+  Serial.print(F("LED IR / Red:          0x"));
+  Serial.print(irPower, HEX);
+  Serial.print(F(" / 0x"));
+  Serial.println(redPower, HEX);
+
+  Serial.println(F("-- timing check --"));
+  Serial.print(F("Lost samples:          "));
+  Serial.println(samplesLost);
+  Serial.print(F("Sensor ms / real ms:   "));
+  Serial.print(sampleClock - sampleClockStart);
+  Serial.print(F(" / "));
+  Serial.println(millis() - measurementStart);
   Serial.println(F("---------------------------------"));
 #endif
 }
@@ -693,7 +1013,7 @@ void drawWelcomeScreen() {
   u8g2.firstPage();
   do {
     drawHeartBig(50, 2);
-    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.setFont(u8g2_font_6x10_tr);
     u8g2.drawStr(25, 44, "Heart Monitor");
     u8g2.drawStr(25, 54, "Put finger on");
     u8g2.drawStr(46, 63, "sensor");
@@ -757,21 +1077,26 @@ void drawMeasurementScreen() {
     }
   }
 
+  const char *status = signalStatus();
+
   u8g2.firstPage();
   do {
     drawHeartSmall(2, 2, heartFlash);
 
-    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.setFont(u8g2_font_5x7_tr);
+    u8g2.drawStr(20, 8, status);
+
+    u8g2.setFont(u8g2_font_6x10_tr);
     int spo2W = u8g2.getStrWidth(spo2Buf);
     u8g2.drawStr(126 - spo2W, 10, spo2Buf);
 
-    u8g2.setFont(u8g2_font_logisoso20_tr);
+    u8g2.setFont(u8g2_font_logisoso20_tn);
     int textW = u8g2.getStrWidth(bpmBuf);
     int xPos = (128 - textW) / 2;
     if (xPos < 0) xPos = 0;
     u8g2.drawStr(xPos, 36, bpmBuf);
 
-    u8g2.setFont(u8g2_font_5x7_tf);
+    u8g2.setFont(u8g2_font_5x7_tr);
     u8g2.drawStr(xPos + textW + 3, 36, "BPM");
 
     int baseY = 47;
@@ -783,7 +1108,7 @@ void drawMeasurementScreen() {
       u8g2.drawLine(x1, y1, x2, y2);
     }
 
-    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.setFont(u8g2_font_6x10_tr);
     u8g2.drawStr(0, 63, bottomBuf);
 
     // Keep reading the sensor while the screen is being sent.
@@ -811,7 +1136,7 @@ void setup() {
 
   u8g2.firstPage();
   do {
-    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.setFont(u8g2_font_6x10_tr);
     u8g2.drawStr(20, 34, "Starting...");
   } while (u8g2.nextPage());
   delay(800);
@@ -819,7 +1144,7 @@ void setup() {
   if (!sensor.begin(Wire, I2C_SPEED_FAST)) {
     u8g2.firstPage();
     do {
-      u8g2.setFont(u8g2_font_6x10_tf);
+      u8g2.setFont(u8g2_font_6x10_tr);
       u8g2.drawStr(10, 24, "SENSOR ERROR");
       u8g2.drawStr(10, 40, "Check wiring");
     } while (u8g2.nextPage());
@@ -830,8 +1155,8 @@ void setup() {
 
   Serial.println(F("MAX30102 FOUND"));
 
-  // ledMode 2 = Red + IR, pulse width 411 us (18-bit), ADC range 4096 nA
-  sensor.setup(LED_POWER, SAMPLE_AVERAGE, 2, SENSOR_SAMPLE_RATE, 411, 4096);
+  // ledMode 2 = Red + IR, pulse width 411 us (18-bit)
+  sensor.setup(LED_POWER, SAMPLE_AVERAGE, 2, SENSOR_SAMPLE_RATE, 411, ADC_RANGE);
   sensor.setPulseAmplitudeRed(LED_POWER);
   sensor.setPulseAmplitudeIR(LED_POWER);
   sensor.clearFIFO();
@@ -876,7 +1201,7 @@ void loop() {
 
   if (elapsed >= HALF_WINDOW && !halfDone) {
     halfDone = true;
-    average30 = (intervalSumA > 0) ? (int)((60000.0 * beatCountA) / intervalSumA + 0.5) : 0;
+    average30 = bpmFrom(intervalSumA, intervalCountA);
   }
 
   // Exactly once per second: refresh the numbers and print one Serial line.
@@ -888,7 +1213,7 @@ void loop() {
 
   if (elapsed >= MEASURE_WINDOW && !measurementDone) {
     measurementDone = true;
-    average60 = (intervalSumAll > 0) ? (int)((60000.0 * beatCountAll) / intervalSumAll + 0.5) : 0;
+    average60 = bpmFrom(intervalSumAll, intervalCountAll);
     printSummary();
     tone(BUZZER_PIN, 2093, 400);   // long beep: measurement finished
   }

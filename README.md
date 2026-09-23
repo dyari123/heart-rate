@@ -45,29 +45,76 @@ Serial Monitor: **115200 baud**.
 5. If the pulse is lost for 3 s (for example, you moved), BPM goes back to `--` and the sketch relearns your pulse.
 
 BPM and SpO2 on the screen update **exactly once per second**, from 1 s to 60 s.
-The Serial Monitor prints one line per second (`time  BPM  SpO2  R`) and a summary after 60 s.
+The Serial Monitor prints one line per second (`time  BPM  SpO2  R  PI  status`) and a summary after 60 s.
+**The headline result is the 60 s average**; the live value is an 8-beat average and lags a few seconds by design.
 
-- Each beat is timed at the steepest point of the pulse upstroke, found to about 1 ms precision.
-- BPM is the trimmed mean of the last 8 good beat-to-beat intervals (the shortest and longest are dropped).
-- If a weak beat is not detected, the gap is split into the missed beats, so BPM keeps updating.
-- The first BPM appears about 3–4 s after the finger goes down (the signal must settle and 2 beats are needed).
+How the reading is kept accurate:
+
+- **No lost samples.** The sketch reads the MAX30102's own 32-sample FIFO directly. The library's buffer holds only 4 samples on a Nano.
+- **LED auto-tune.** While the signal settles, IR and Red currents are tuned separately to a raw level of 100,000–200,000.
+- **Filter.** A 2nd-order Butterworth low-pass filter at 5 Hz removes noise.
+- **Beat timing.** Each beat is timed at the steepest point of the pulse upstroke, to about 1 ms.
+- **Quality checks.** Beats are skipped when:
+  - the pulse is too weak (perfusion index below 0.2%, shown as `WEAK`);
+  - the top is clipped (`CLIPPED`);
+  - the finger moved (baseline jump over 2% in 0.5 s pauses detection for 1 s, shown as `MOTION`).
+- **Rejection count.** Rejected beats and intervals are counted in the summary. Above 15% it prints `WARNING: irregular or noisy signal`.
 
 SpO2 appears after 5 good beats. It is the median of the last 8 beats.
 For a healthy person at rest, **95–100%** is normal, and 96–99% is the most common reading.
+
+## Timing check (do this first)
+
+The summary ends with:
+
+```
+Lost samples:          0
+Sensor ms / real ms:   60012 / 60000
+```
+
+- `Lost samples` must be 0.
+- If sensor ms and real ms differ by more than 0.5%, run 3–4 times, average `sensor ms / real ms`, and put it in `CLOCK_FIX`.
+  The Nano's own clock is only about ±0.5% accurate, so ignore smaller differences.
+
+## Hardware tips
+
+- Hold the finger still with a clip or foam cradle, at light, constant pressure.
+- Block ambient light with black tape or a dark cap.
+- Warm cold fingers first.
+- Keep I2C wires short and twisted with GND.
+- Add a 100 µF capacitor across 5V/GND near the sensor.
+- Ideally, drive the buzzer through a transistor.
 
 ## Calibrating SpO2
 
 This sensor has no factory calibration, so each module can read a little high or low.
 To calibrate it against a real fingertip pulse oximeter (the pharmacy kind):
 
-1. Open the Serial Monitor. Every second prints a line like `12s     72   97%   0.512` (the last number is R).
-2. Measure one finger with the real oximeter and another finger with this device, at the same time.
-3. After about 30 s, note the typical `R` value and the real oximeter's SpO2.
-4. In the sketch, set `SPO2_A = realSpO2 + 25 * R`.
-   Example: the real oximeter shows 97 and R is about 0.40, so `SPO2_A = 97 + 25 * 0.40 = 107`.
+1. Wear the real oximeter on one hand and this sensor on the other. Sit still for the full 60 s.
+2. Note the oximeter's SpO2 and `Average R` from the summary.
+3. Compute `A = oximeterSpO2 + 25 * R`.
+   Example: 97% and R = 0.40 gives `A = 97 + 25 * 0.40 = 107`.
+4. Repeat on 10+ sessions on different days, average A, and put it in `SPO2_A`.
+
+This fixes the offset only. Healthy people are all near 96–99%, so the slope can't be calibrated at home.
+**Never hold your breath to lower your SpO2 for this.**
+Redo the calibration after changing the module, filter or LED logic.
+Expect about 2–4% accuracy near normal values.
+
+## Testing against a reference
+
+Run the device and a reference (chest strap, fingertip oximeter, smartwatch, or a manual 60 s pulse count) together for 60 s.
+Do 10 runs at rest and 5 after light exercise, then log the results:
+
+| Run | Person | Condition | Your BPM | Reference BPM | Difference | Your SpO2 | Reference SpO2 |
+|-----|--------|-----------|----------|---------------|------------|-----------|----------------|
+| 1   |        | rest      |          |               |            |           |                |
+
+A good result is within ±1 BPM at rest and ±2 BPM after exercise.
 
 ## Tuning
 
 - **Finger not detected, or detected with no finger:** watch `IR=` on the Serial Monitor, then change `FINGER_ON_LEVEL` / `FINGER_OFF_LEVEL`.
 - **To see the pulse wave:** set `#define PLOT_SIGNAL 1` and open the Serial Plotter. You should see a clean bump for each beat.
-- **Pulse too weak (small bumps):** raise `LED_POWER` (for example `0x3F`).
+- **`WEAK` all the time:** warm the finger, block ambient light, press more lightly. `MIN_PERFUSION` is the limit (0.2%).
+- **IR near 262,143 even at low LED current:** change `ADC_RANGE` to 8192 or 16384.
