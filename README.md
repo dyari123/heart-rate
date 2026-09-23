@@ -45,7 +45,22 @@ Serial Monitor: **115200 baud**.
 5. If the pulse is lost for 3 s (for example, you moved), BPM goes back to `--` and the sketch relearns your pulse.
 
 BPM updates **on every heartbeat**, so about once per second at 60 BPM, faster when the heart is faster.
-The number is the average of the last 4 beat-to-beat intervals.
+The number appears after 2 beats and then averages the last 4 beat-to-beat intervals.
+If a weak beat is not detected, the gap is split into the missed beats, so BPM keeps updating.
+
+SpO2 appears after 5 good beats. It is the median of the last 8 beats.
+For a healthy person at rest, **95–100%** is normal, and 96–99% is the most common reading.
+
+## Calibrating SpO2
+
+This sensor has no factory calibration, so each module can read a little high or low.
+To calibrate it against a real fingertip pulse oximeter (the pharmacy kind):
+
+1. Open the Serial Monitor. Every beat prints a line like `HEARTBEAT  BPM=72  SpO2=97  R=0.512`.
+2. Measure one finger with the real oximeter and another finger with this device, at the same time.
+3. After about 30 s, note the typical `R` value and the real oximeter's SpO2.
+4. In the sketch, set `SPO2_A = realSpO2 + 25 * R`.
+   Example: the real oximeter shows 97 and R is about 0.40, so `SPO2_A = 97 + 25 * 0.40 = 107`.
 
 ## Tuning
 

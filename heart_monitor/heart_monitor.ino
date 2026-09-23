@@ -61,6 +61,13 @@ const unsigned int MAX_BEAT_INTERVAL = 1500;  // 40 BPM
 const unsigned int SIGNAL_LOST_MS = 3000;     // no beat for this long -> show "--" and re-learn
 const float INTERVAL_TOLERANCE = 0.25;        // beat interval may differ 25% from the median
 
+// SpO2 = SPO2_A - SPO2_B * R   (R = ratio of Red to IR pulse strength)
+// 110 - 25*R is the standard textbook approximation. To calibrate against a
+// real fingertip oximeter, see the README ("Calibrating SpO2").
+const float SPO2_A = 110.0;
+const float SPO2_B = 25.0;
+const byte SPO2_MIN_BEATS = 5;                // good beats needed before SpO2 is shown
+
 // Measurement
 const unsigned long HALF_WINDOW = 30000;
 const unsigned long MEASURE_WINDOW = 60000;
@@ -108,7 +115,7 @@ bool haveValley = false;
 float extremeIR = 0;
 unsigned long extremeTime = 0;
 float valleyIR = 0;
-float redHigh = 0, redLow = 0, valleyRed = 0;
+float extremeRed = 0, valleyRed = 0;   // Red taken at the same moments as the IR peak / valley
 float pulseAmplitude = 0;    // learned typical beat size (0 = still learning)
 unsigned long lastBeatTime = 0;
 unsigned long lastActivity = 0;
@@ -121,9 +128,12 @@ byte ibiCount = 0;
 byte ibiHead = 0;
 byte outlierStreak = 0;
 
-// SpO2 ratio (smoothed over beats)
-float ratioAvg = 0;
+// SpO2 ratio of the last beats (median is used, so one bad beat can't move it)
+#define RATIO_SIZE 8
+float ratios[RATIO_SIZE];
 byte ratioCount = 0;
+byte ratioHead = 0;
+float lastRatio = 0;
 
 // Screen effects
 bool heartFlash = false;
@@ -145,6 +155,12 @@ const int SPIKE_LEN = sizeof(spikePattern);
 // RESET / START
 // =====================================================
 
+void clearRatios() {
+  ratioCount = 0;
+  ratioHead = 0;
+  lastRatio = 0;
+}
+
 void clearIntervals() {
   ibiCount = 0;
   ibiHead = 0;
@@ -161,14 +177,13 @@ void resetDetector() {
   extremeIR = 0;
   extremeTime = 0;
   valleyIR = 0;
-  redHigh = redLow = valleyRed = 0;
+  extremeRed = valleyRed = 0;
   pulseAmplitude = 0;
   lastBeatTime = 0;
   lastActivity = sampleClock;
 
   clearIntervals();
-  ratioAvg = 0;
-  ratioCount = 0;
+  clearRatios();
   currentBPM = 0;
   currentSpO2 = 0;
 }
@@ -208,8 +223,7 @@ void signalLost() {
   if (currentBPM > 0) Serial.println(F("NO PULSE - hold still"));
   currentBPM = 0;
   currentSpO2 = 0;
-  ratioAvg = 0;
-  ratioCount = 0;
+  clearRatios();
   pulseAmplitude = 0;
   lastBeatTime = 0;
   lastActivity = sampleClock;
@@ -271,13 +285,28 @@ void updateSpO2(float irAmp, float redAmp) {
   if (irAmp <= 0 || redAmp <= 0 || irDC <= 0 || redDC <= 0) return;
 
   float ratio = (redAmp / redDC) / (irAmp / irDC);
-  if (ratio < 0.2 || ratio > 2.0) return;   // nonsense beat, don't let it pull the average
+  if (ratio < 0.1 || ratio > 2.0) return;   // nonsense beat, don't let it pull the result
 
-  ratioAvg = (ratioCount == 0) ? ratio : ratioAvg * 0.8 + ratio * 0.2;
-  if (ratioCount < 255) ratioCount++;
+  lastRatio = ratio;
+  ratios[ratioHead] = ratio;
+  ratioHead = (ratioHead + 1) % RATIO_SIZE;
+  if (ratioCount < RATIO_SIZE) ratioCount++;
 
-  if (ratioCount >= 4) {
-    float spo2f = -45.060 * ratioAvg * ratioAvg + 30.354 * ratioAvg + 94.845;
+  if (ratioCount >= SPO2_MIN_BEATS) {
+    float sorted[RATIO_SIZE];
+    for (byte i = 0; i < ratioCount; i++) sorted[i] = ratios[i];
+    for (byte i = 1; i < ratioCount; i++) {
+      float v = sorted[i];
+      byte j = i;
+      while (j > 0 && sorted[j - 1] > v) {
+        sorted[j] = sorted[j - 1];
+        j--;
+      }
+      sorted[j] = v;
+    }
+    float r = sorted[ratioCount / 2];
+
+    float spo2f = SPO2_A - SPO2_B * r;
     if (spo2f > 100) spo2f = 100;
     if (spo2f < 70) spo2f = 70;
     currentSpO2 = (int)(spo2f + 0.5);
@@ -321,14 +350,13 @@ void addInterval(unsigned int interval) {
   ibiHead = (ibiHead + 1) % IBI_SIZE;
   if (ibiCount < IBI_SIZE) ibiCount++;
 
-  if (ibiCount >= 2) {
-    byte n = (ibiCount < IBI_DISPLAY) ? ibiCount : IBI_DISPLAY;
-    unsigned long sum = 0;
-    for (byte i = 1; i <= n; i++) {
-      sum += ibi[(ibiHead + IBI_SIZE - i) % IBI_SIZE];
-    }
-    currentBPM = (int)((60000UL * n + sum / 2) / sum);
+  // Shown from the very first interval, then averaged over the last 4.
+  byte n = (ibiCount < IBI_DISPLAY) ? ibiCount : IBI_DISPLAY;
+  unsigned long sum = 0;
+  for (byte i = 1; i <= n; i++) {
+    sum += ibi[(ibiHead + IBI_SIZE - i) % IBI_SIZE];
   }
+  currentBPM = (int)((60000UL * n + sum / 2) / sum);
 
   // Official 30 s / 60 s averages only use beats that passed every check.
   if (!measurementDone) {
@@ -346,7 +374,9 @@ void addInterval(unsigned int interval) {
   Serial.print(F("HEARTBEAT  BPM="));
   Serial.print(currentBPM);
   Serial.print(F("  SpO2="));
-  Serial.println(currentSpO2);
+  Serial.print(currentSpO2);
+  Serial.print(F("  R="));
+  Serial.println(lastRatio, 3);
 }
 
 // A full valley -> peak pulse was found in the IR signal.
@@ -374,10 +404,26 @@ void onPulse(float amplitude, float redAmplitude, unsigned long peakTime) {
   unsigned long interval = peakTime - lastBeatTime;
   lastBeatTime = peakTime;
 
-  // A gap means a beat was missed; the next interval will be fine again.
-  if (interval > MAX_BEAT_INTERVAL) return;
+  // A gap of about 2 or 3 normal beats means weak beats in between were not
+  // detected. Split it into the missed beats instead of throwing it away
+  // (or worse, counting it as one very slow beat) so BPM keeps updating.
+  if (ibiCount > 0) {
+    unsigned int reference = medianInterval();
+    unsigned long beats = (interval + reference / 2) / reference;
+    if (beats >= 2 && beats <= 3) {
+      unsigned int part = (unsigned int)(interval / beats);
+      unsigned int diff = (part > reference) ? part - reference : reference - part;
+      if (diff <= reference * INTERVAL_TOLERANCE) {
+        addInterval(part);
+        return;
+      }
+    }
+  } else if (interval > MAX_BEAT_INTERVAL && interval <= 2UL * MAX_BEAT_INTERVAL) {
+    addInterval((unsigned int)(interval / 2));   // no history yet: assume one missed beat
+    return;
+  }
 
-  addInterval((unsigned int)interval);
+  if (interval <= MAX_BEAT_INTERVAL) addInterval((unsigned int)interval);
 }
 
 // =====================================================
@@ -418,35 +464,37 @@ void processSample(uint32_t ir, uint32_t red) {
   float hysteresis = pulseAmplitude * 0.3;
   if (hysteresis < MIN_HYSTERESIS) hysteresis = MIN_HYSTERESIS;
 
+  // Red is read at the exact moments of the IR peak and valley. Taking Red's
+  // own highest/lowest point would add its noise on top and make SpO2 read low.
   if (lookingForPeak) {
-    if (redAC > redHigh) redHigh = redAC;
     if (irAC >= extremeIR) {
       extremeIR = irAC;
+      extremeRed = redAC;
       extremeTime = sampleClock;
     } else if (extremeIR - irAC > hysteresis) {
       float amplitude = extremeIR - valleyIR;
-      float redAmplitude = redHigh - valleyRed;
+      float redAmplitude = extremeRed - valleyRed;
       unsigned long peakTime = extremeTime;
 
       lookingForPeak = false;
       extremeIR = irAC;
-      redLow = redAC;
+      extremeRed = redAC;
 
       if (haveValley) onPulse(amplitude, redAmplitude, peakTime);
     }
   } else {
-    if (redAC < redLow) redLow = redAC;
     if (irAC <= extremeIR) {
       extremeIR = irAC;
+      extremeRed = redAC;
     } else if (irAC - extremeIR > hysteresis) {
       valleyIR = extremeIR;
-      valleyRed = redLow;
+      valleyRed = extremeRed;
       haveValley = true;
 
       lookingForPeak = true;
       extremeIR = irAC;
+      extremeRed = redAC;
       extremeTime = sampleClock;
-      redHigh = redAC;
     }
   }
 }
