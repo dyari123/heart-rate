@@ -1,0 +1,829 @@
+<title>Heart Monitor v3.3 Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: sticky contents rail + one reading column; every subsystem keeps its own colour everywhere (chips, diagrams, function cards). */
+:root{
+  --bg:#f2f6f6; --surface:#ffffff; --sunk:#e8eff0; --ink:#13222b; --muted:#566a74; --line:#d3dee1;
+  --heart:#d3304b; --oxy:#2160c4; --temp:#c86f12; --disp:#0c8487; --bus:#5458c2; --ok:#1f8a4c;
+  --heart-bg:#fbe9ec; --oxy-bg:#e7effb; --temp-bg:#fbf0e3; --disp-bg:#e3f4f3; --bus-bg:#ecebfa;
+  --code-bg:#0f1b22; --code-ink:#dbe7ea; --code-com:#7f97a2; --code-kw:#ff8fa3; --code-num:#ffc178; --code-str:#8fe3b0; --code-fn:#8cbcff;
+  --oled:#05080a; --oled-px:#7fe6ff;
+  --f-display:"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --f-body:"Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --f-mono:"JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0c1418; --surface:#132028; --sunk:#0f1a20; --ink:#e2ebee; --muted:#93a7b0; --line:#233641;
+  --heart:#ff6b82; --oxy:#6ea8ff; --temp:#f2a24c; --disp:#3fcac6; --bus:#9a9dff; --ok:#4fd18a;
+  --heart-bg:#2a1820; --oxy-bg:#16233a; --temp-bg:#2b2116; --disp-bg:#122a2b; --bus-bg:#1d1f3a;
+  --code-bg:#081015; color-scheme:dark; } }
+:root[data-theme="dark"]{
+  --bg:#0c1418; --surface:#132028; --sunk:#0f1a20; --ink:#e2ebee; --muted:#93a7b0; --line:#233641;
+  --heart:#ff6b82; --oxy:#6ea8ff; --temp:#f2a24c; --disp:#3fcac6; --bus:#9a9dff; --ok:#4fd18a;
+  --heart-bg:#2a1820; --oxy-bg:#16233a; --temp-bg:#2b2116; --disp-bg:#122a2b; --bus-bg:#1d1f3a;
+  --code-bg:#081015; color-scheme:dark; }
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:17px/1.6 var(--f-body);}
+.wrap{max-width:1240px;margin:0 auto;padding-inline:20px;padding-block:28px 64px;display:grid;grid-template-columns:230px minmax(0,1fr);gap:40px}
+@media (max-width:960px){.wrap{grid-template-columns:minmax(0,1fr);gap:20px}}
+a{color:var(--disp)}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(--bus);outline-offset:2px}
+h1,h2,h3{font-family:var(--f-display);line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.2rem,5vw,3.6rem);font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(1.6rem,3vw,2.1rem);font-weight:700;letter-spacing:-.01em}
+h3{font-size:1.2rem;font-weight:700}
+p{margin:0;max-width:68ch}
+code{font-family:var(--f-mono);font-size:.86em;background:var(--sunk);border:1px solid var(--line);border-radius:5px;padding:.05em .35em;overflow-wrap:anywhere}
+.muted{color:var(--muted)}
+
+/* contents rail */
+nav.toc{position:sticky;top:calc(env(safe-area-inset-top,0px) + 20px);align-self:start;font-size:.92rem}
+nav.toc .label{font:600 .72rem/1 var(--f-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+nav.toc ol{list-style:none;margin:0;padding:0;display:grid;gap:2px;counter-reset:t}
+nav.toc li a{display:flex;gap:10px;padding:6px 10px;border-radius:8px;color:var(--ink);text-decoration:none}
+nav.toc li a::before{counter-increment:t;content:counter(t,decimal-leading-zero);font:600 .75rem/1.9 var(--f-mono);color:var(--muted)}
+nav.toc li a:hover{background:var(--surface)}
+@media (max-width:960px){nav.toc{position:static}nav.toc ol{grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}}
+
+main{display:grid;gap:64px;min-width:0}
+section{display:grid;gap:18px;min-width:0;scroll-margin-top:20px}
+.eyebrow{font:600 .74rem/1 var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+
+/* hero */
+.hero{display:grid;gap:16px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.hero .sub{font-size:1.2rem;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:5px 12px 5px 9px;border-radius:999px;font:600 .82rem/1.2 var(--f-body);background:var(--surface);border:1px solid var(--line)}
+.chip i{width:10px;height:10px;border-radius:50%;display:block}
+.c-heart{--c:var(--heart);--cb:var(--heart-bg)} .c-oxy{--c:var(--oxy);--cb:var(--oxy-bg)} .c-temp{--c:var(--temp);--cb:var(--temp-bg)}
+.c-disp{--c:var(--disp);--cb:var(--disp-bg)} .c-bus{--c:var(--bus);--cb:var(--bus-bg)}
+.chip i{background:var(--c)}
+.note{font-size:.9rem;color:var(--muted)}
+
+/* subsystem cards */
+.systems{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.sys{background:var(--cb);border-radius:14px;padding:16px;display:grid;gap:6px;align-content:start}
+.sys h3{color:var(--c);font-size:1.05rem}
+.sys p{font-size:.94rem}
+.sys .tag{font:600 .74rem/1.3 var(--f-mono);color:var(--c)}
+
+/* figures */
+figure{margin:0;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;display:grid;gap:10px;min-width:0}
+figure .scroll{overflow-x:auto}
+section>*,figure>*,.step .body>*,.callout>*,.two>*,.systems>*,.screens>*{min-width:0}
+figcaption{font-size:.9rem;color:var(--muted)}
+svg text{font-family:var(--f-body)}
+svg .mono{font-family:var(--f-mono)}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.93rem}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:600 .74rem/1.3 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--sunk)}
+tr:last-child td{border-bottom:0}
+td code{white-space:nowrap}
+td.num{font-family:var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.group-row td{background:var(--cb);color:var(--c);font:700 .82rem/1.2 var(--f-display);letter-spacing:.02em}
+
+/* steps */
+.steps{display:grid;gap:14px;counter-reset:s}
+.step{display:grid;grid-template-columns:52px minmax(0,1fr);gap:14px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px}
+.step .n{width:44px;height:44px;border-radius:12px;background:var(--cb);color:var(--c);display:grid;place-items:center;font:800 1.2rem/1 var(--f-display)}
+.step .body{display:grid;gap:10px;min-width:0}
+.step h3 small{font:500 .82rem/1 var(--f-mono);color:var(--muted);margin-left:6px}
+ul.tight,ol.tight{margin:0;padding-left:1.2em;display:grid;gap:4px}
+ul.tight li,ol.tight li{max-width:66ch}
+
+/* code */
+pre{margin:0;background:var(--code-bg);color:var(--code-ink);border-radius:10px;padding:14px 16px;overflow-x:auto;font:400 .84rem/1.6 var(--f-mono)}
+pre code{background:none;border:0;padding:0;font-size:1em;color:inherit;overflow-wrap:normal}
+.hljs-comment{color:var(--code-com);font-style:italic}
+.hljs-keyword,.hljs-type,.hljs-built_in,.hljs-meta{color:var(--code-kw)}
+.hljs-number,.hljs-literal{color:var(--code-num)}
+.hljs-string{color:var(--code-str)}
+.hljs-title,.hljs-title.function_{color:var(--code-fn)}
+
+/* callouts */
+.callout{border-left:4px solid var(--c);background:var(--cb);border-radius:0 12px 12px 0;padding:14px 16px;display:grid;gap:8px;align-content:start}
+.callout strong{color:var(--c)}
+.example{background:var(--sunk);border-radius:10px;padding:12px 14px;font-family:var(--f-mono);font-size:.88rem;font-variant-numeric:tabular-nums;overflow-x:auto;white-space:pre}
+
+/* gates */
+.gates{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.gates li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;background:var(--sunk);border-radius:10px;padding:10px 12px;font-size:.93rem}
+.gates .k{font:600 .78rem/1 var(--f-mono);color:var(--muted)}
+.pill{font:700 .72rem/1 var(--f-mono);padding:5px 8px;border-radius:999px;white-space:nowrap}
+.pill.skip{background:var(--sunk);border:1px solid var(--line);color:var(--muted)}
+.pill.rej{background:var(--heart-bg);color:var(--heart)}
+.pill.acc{background:var(--disp-bg);color:var(--ok)}
+@media (max-width:560px){.gates li{grid-template-columns:minmax(0,1fr)}}
+
+/* oled mockups */
+.screens{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.oled{background:var(--oled);border-radius:10px;padding:10px;border:6px solid #1d2a31}
+.oled svg{display:block;width:100%;height:auto;image-rendering:pixelated}
+.oled text{font-family:var(--f-mono);fill:var(--oled-px)}
+
+/* function reference */
+.fn-tools{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.fn-tools input{flex:1 1 240px;min-width:0;font:inherit;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+.fn-tools button{font:600 .82rem/1 var(--f-body);padding:9px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;display:inline-flex;gap:7px;align-items:center}
+.fn-tools button[aria-pressed="true"]{background:var(--cb);border-color:var(--c);color:var(--c)}
+.fn-tools button i{width:9px;height:9px;border-radius:50%;background:var(--c)}
+.fn-tools button.all{--c:var(--ink);--cb:var(--sunk)}
+.fns{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.fn{background:var(--surface);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:12px;padding:14px;display:grid;gap:8px;align-content:start;min-width:0}
+.fn .sig{font:600 .86rem/1.4 var(--f-mono);color:var(--c);overflow-wrap:anywhere}
+.fn p{font-size:.92rem}
+.fn .by{font-size:.8rem;color:var(--muted)}
+.fn .by code{font-size:.95em}
+.empty{color:var(--muted)}
+
+/* serial */
+.serial{background:var(--code-bg);color:var(--code-str);border-radius:10px;padding:14px 16px;font:400 .86rem/1.7 var(--f-mono);overflow-x:auto;white-space:pre}
+
+/* glossary */
+dl.gloss{display:grid;grid-template-columns:minmax(120px,190px) minmax(0,1fr);gap:10px 18px;margin:0}
+dl.gloss dt{font:700 1rem/1.4 var(--f-display)}
+dl.gloss dd{margin:0;color:var(--ink);max-width:66ch}
+@media (max-width:560px){dl.gloss{grid-template-columns:minmax(0,1fr)} dl.gloss dd{margin-bottom:8px}}
+
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+footer{border-top:1px solid var(--line);padding-top:18px;font-size:.88rem;color:var(--muted)}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <div class="label">Contents</div>
+  <ol>
+    <li><a href="#overview">The big picture</a></li>
+    <li><a href="#flow">How the program runs</a></li>
+    <li><a href="#signal">Light to heartbeat</a></li>
+    <li><a href="#average">30-second average</a></li>
+    <li><a href="#spo2">Blood oxygen</a></li>
+    <li><a href="#temp">Temperature</a></li>
+    <li><a href="#screen">Screen and buzzer</a></li>
+    <li><a href="#serial">Serial output</a></li>
+    <li><a href="#settings">Settings reference</a></li>
+    <li><a href="#functions">Function reference</a></li>
+    <li><a href="#state">State variables</a></li>
+    <li><a href="#notes">Things to know</a></li>
+    <li><a href="#glossary">Glossary</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">Arduino Nano · MAX30102 · GY-906 · SSD1306 · Buzzer</div>
+  <h1>Heart Monitor v3.3</h1>
+  <p class="sub">How the code works: every part, every function and every setting, explained in plain words.</p>
+  <div class="chips" aria-label="Colour key">
+    <span class="chip c-heart"><i></i>Heart rate</span>
+    <span class="chip c-oxy"><i></i>Blood oxygen</span>
+    <span class="chip c-temp"><i></i>Temperature</span>
+    <span class="chip c-disp"><i></i>Screen, sound and output</span>
+    <span class="chip c-bus"><i></i>I²C bus and control</span>
+  </div>
+  <p class="note">Each colour marks one part of the program and stays the same in every diagram, table and card below. This is a hobby project, not a medical device.</p>
+</header>
+
+<!-- 01 OVERVIEW -->
+<section id="overview">
+  <div class="eyebrow">01 · Overview</div>
+  <h2>The big picture</h2>
+  <p>The Nano runs three measurements at the same time on one small chip with 32 KB of program space and 2 KB of memory. A fingertip on the MAX30102 gives heart rate and blood oxygen, the GY-906 measures temperature without contact, and the OLED, buzzer and USB serial line show the results.</p>
+  <div class="systems">
+    <div class="sys c-heart"><span class="tag">MAX30102 · IR light</span><h3>Heart rate</h3><p>Infrared light shines into the fingertip. Each heartbeat pushes blood in, the reflected light dips, and the code times those dips to get BPM.</p></div>
+    <div class="sys c-oxy"><span class="tag">MAX30102 · Red + IR</span><h3>Blood oxygen</h3><p>Oxygen-rich blood absorbs red and infrared light differently. The ratio of the two pulse sizes gives an SpO2 estimate.</p></div>
+    <div class="sys c-temp"><span class="tag">GY-906 · MLX90614</span><h3>Temperature</h3><p>A thermopile reads the infrared heat given off by whatever is in front of it, twice a second.</p></div>
+    <div class="sys c-disp"><span class="tag">SSD1306 · D8 · USB</span><h3>Screen, sound, output</h3><p>The OLED redraws 10 times a second, the buzzer beeps, and one text line per second goes to the laptop.</p></div>
+  </div>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 760 270" width="760" style="max-width:100%;height:auto;min-width:560px" role="img" aria-label="Wiring: the Nano connects to the OLED, MAX30102 and GY-906 through one shared I2C bus on A4 and A5; the buzzer is on D8">
+      <rect x="20" y="62" width="150" height="132" rx="12" fill="var(--bus-bg)" stroke="var(--bus)" stroke-width="2"/>
+      <text x="95" y="92" text-anchor="middle" font-weight="700" font-size="16" fill="var(--ink)">Arduino Nano</text>
+      <text x="95" y="111" text-anchor="middle" font-size="12" fill="var(--muted)">ATmega328P</text>
+      <text x="178" y="95" class="mono" font-size="12" fill="var(--bus)">A4 SDA</text>
+      <text x="178" y="148" class="mono" font-size="12" fill="var(--bus)">A5 SCL</text>
+      <text x="95" y="184" text-anchor="middle" class="mono" font-size="12" fill="var(--disp)">D8</text>
+      <line x1="170" y1="101" x2="740" y2="101" stroke="var(--bus)" stroke-width="3"/>
+      <line x1="170" y1="131" x2="740" y2="131" stroke="var(--bus)" stroke-width="3" stroke-dasharray="7 5"/>
+      <text x="740" y="90" text-anchor="end" font-size="12" fill="var(--muted)">I²C bus · 100 kHz · solid = SDA, dashed = SCL</text>
+      <g>
+        <line x1="290" y1="101" x2="290" y2="176" stroke="var(--disp)" stroke-width="2"/><line x1="300" y1="131" x2="300" y2="176" stroke="var(--disp)" stroke-width="2" stroke-dasharray="4 3"/>
+        <rect x="225" y="176" width="140" height="66" rx="10" fill="var(--disp-bg)" stroke="var(--disp)" stroke-width="2"/>
+        <text x="295" y="202" text-anchor="middle" font-weight="700" font-size="14" fill="var(--ink)">SSD1306 OLED</text>
+        <text x="295" y="224" text-anchor="middle" class="mono" font-size="13" fill="var(--disp)">0x3C</text>
+      </g>
+      <g>
+        <line x1="460" y1="101" x2="460" y2="176" stroke="var(--heart)" stroke-width="2"/><line x1="470" y1="131" x2="470" y2="176" stroke="var(--heart)" stroke-width="2" stroke-dasharray="4 3"/>
+        <rect x="395" y="176" width="140" height="66" rx="10" fill="var(--heart-bg)" stroke="var(--heart)" stroke-width="2"/>
+        <text x="465" y="202" text-anchor="middle" font-weight="700" font-size="14" fill="var(--ink)">MAX30102</text>
+        <text x="465" y="224" text-anchor="middle" class="mono" font-size="13" fill="var(--heart)">0x57</text>
+      </g>
+      <g>
+        <line x1="630" y1="101" x2="630" y2="176" stroke="var(--temp)" stroke-width="2"/><line x1="640" y1="131" x2="640" y2="176" stroke="var(--temp)" stroke-width="2" stroke-dasharray="4 3"/>
+        <rect x="565" y="176" width="140" height="66" rx="10" fill="var(--temp-bg)" stroke="var(--temp)" stroke-width="2"/>
+        <text x="635" y="202" text-anchor="middle" font-weight="700" font-size="14" fill="var(--ink)">GY-906</text>
+        <text x="635" y="224" text-anchor="middle" class="mono" font-size="13" fill="var(--temp)">0x5A</text>
+      </g>
+      <line x1="95" y1="194" x2="95" y2="214" stroke="var(--disp)" stroke-width="2"/>
+      <rect x="40" y="214" width="110" height="40" rx="10" fill="var(--disp-bg)" stroke="var(--disp)" stroke-width="2"/>
+      <text x="95" y="239" text-anchor="middle" font-weight="700" font-size="13" fill="var(--ink)">Buzzer</text>
+    </svg>
+    </div>
+    <figcaption>All three I²C devices share two wires, A4 (SDA) and A5 (SCL). Each answers to its own address. The bus runs at 100 kHz because the MLX90614 is unreliable at 400 kHz.</figcaption>
+  </figure>
+</section>
+
+<!-- 02 FLOW -->
+<section id="flow" class="c-bus">
+  <div class="eyebrow">02 · Program flow</div>
+  <h2>How the program runs</h2>
+  <p>Like every Arduino sketch, it has two parts: <code>setup()</code> runs once at power-on, then <code>loop()</code> repeats forever, thousands of times a second.</p>
+
+  <div class="two">
+    <div class="callout c-bus">
+      <strong>setup(): once, at power-on</strong>
+      <ol class="tight">
+        <li>Buzzer off, Serial at <code>115200</code> baud.</li>
+        <li>OLED started at 100 kHz and shows <em>Starting...</em> for 0.8 s.</li>
+        <li>MAX30102 started. If it does not answer, the screen shows <em>SENSOR ERROR</em> and the program stops.</li>
+        <li>Sensor configured: LED current 0x1F, average 4 samples, Red + IR mode, 400 samples/s, 411 µs pulses, 4096 nA range. FIFO cleared.</li>
+        <li>Bus forced back to 100 kHz in case a library changed it.</li>
+        <li>MLX90614 checked once; Serial says FOUND or NOT FOUND.</li>
+        <li><code>resetMeasurement()</code> puts everything in its starting state.</li>
+      </ol>
+    </div>
+    <div class="callout c-disp">
+      <strong>The loop never waits</strong>
+      <p>Nothing in <code>loop()</code> uses <code>delay()</code>. Each job checks a timer and runs only when its turn has come, so reading the sensor is never held up by the slower screen.</p>
+      <p>Two clocks are used. <code>sampleClock</code> adds 10 ms for every sensor sample and times heartbeats precisely. <code>millis()</code> drives the screen, the timers and the 30-second cycle.</p>
+    </div>
+  </div>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Job in loop()</th><th>How often</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>pumpSensor()</code></td><td class="num">every pass</td><td>Reads all new MAX30102 samples. Also called between OLED page transfers.</td></tr>
+      <tr><td><code>updateTemperature()</code></td><td class="num">500 ms</td><td>Reads the MLX90614 object temperature.</td></tr>
+      <tr><td>Waiting line + welcome screen</td><td class="num">1 s / 100 ms</td><td>Only while no finger is present. Then <code>loop()</code> returns early.</td></tr>
+      <tr><td>Heart icon flash off</td><td class="num">160 ms</td><td>Turns the filled heart back to an outline after a beat.</td></tr>
+      <tr><td><code>updateWaveform()</code></td><td class="num">25 ms</td><td>Shifts the on-screen wave one step left.</td></tr>
+      <tr><td>30-second cycle check</td><td class="num">every 30 s</td><td>Stores the cycle's average BPM, prints the summary, resets the counters.</td></tr>
+      <tr><td><code>updateEverySecond()</code></td><td class="num">1 s</td><td>Recomputes BPM, updates SpO2, beeps, prints one Serial line.</td></tr>
+      <tr><td><code>drawMeasurementScreen()</code></td><td class="num">100 ms</td><td>Redraws the OLED (10 frames per second).</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- 03 SIGNAL -->
+<section id="signal" class="c-heart">
+  <div class="eyebrow">03 · Heart rate</div>
+  <h2>From light to heartbeat</h2>
+  <p>Every 10 ms the MAX30102 produces one Red and one IR reading. Each reading travels through the same seven steps until it either becomes part of a heartbeat or is thrown away.</p>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 980 120" width="980" style="max-width:100%;height:auto;min-width:760px" role="img" aria-label="Signal path in seven steps">
+      <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+      <g font-size="13">
+        <rect x="4" y="24" width="122" height="72" rx="12" fill="var(--bus-bg)" stroke="var(--bus)" stroke-width="2"/>
+        <text x="65" y="52" text-anchor="middle" font-weight="700" fill="var(--ink)">1 Read FIFO</text><text x="65" y="74" text-anchor="middle" class="mono" font-size="11" fill="var(--bus)">pumpSensor</text>
+        <rect x="144" y="24" width="122" height="72" rx="12" fill="var(--bus-bg)" stroke="var(--bus)" stroke-width="2"/>
+        <text x="205" y="52" text-anchor="middle" font-weight="700" fill="var(--ink)">2 Finger?</text><text x="205" y="74" text-anchor="middle" class="mono" font-size="11" fill="var(--bus)">handleSample</text>
+        <rect x="284" y="24" width="122" height="72" rx="12" fill="var(--heart-bg)" stroke="var(--heart)" stroke-width="2"/>
+        <text x="345" y="52" text-anchor="middle" font-weight="700" fill="var(--ink)">3 Settle, tune</text><text x="345" y="74" text-anchor="middle" class="mono" font-size="11" fill="var(--heart)">processSample</text>
+        <rect x="424" y="24" width="122" height="72" rx="12" fill="var(--heart-bg)" stroke="var(--heart)" stroke-width="2"/>
+        <text x="485" y="52" text-anchor="middle" font-weight="700" fill="var(--ink)">4 Clean</text><text x="485" y="74" text-anchor="middle" class="mono" font-size="11" fill="var(--heart)">DC + lowPass</text>
+        <rect x="564" y="24" width="122" height="72" rx="12" fill="var(--heart-bg)" stroke="var(--heart)" stroke-width="2"/>
+        <text x="625" y="52" text-anchor="middle" font-weight="700" fill="var(--ink)">5 Find beat</text><text x="625" y="74" text-anchor="middle" class="mono" font-size="11" fill="var(--heart)">peak / valley</text>
+        <rect x="704" y="24" width="122" height="72" rx="12" fill="var(--heart-bg)" stroke="var(--heart)" stroke-width="2"/>
+        <text x="765" y="52" text-anchor="middle" font-weight="700" fill="var(--ink)">6 Check, count</text><text x="765" y="74" text-anchor="middle" class="mono" font-size="11" fill="var(--heart)">onPulse</text>
+        <rect x="844" y="24" width="132" height="72" rx="12" fill="var(--disp-bg)" stroke="var(--disp)" stroke-width="2"/>
+        <text x="910" y="52" text-anchor="middle" font-weight="700" fill="var(--ink)">7 BPM each s</text><text x="910" y="74" text-anchor="middle" class="mono" font-size="11" fill="var(--disp)">computeBPM</text>
+      </g>
+      <g stroke="var(--muted)" stroke-width="2" marker-end="url(#ar)">
+        <line x1="127" y1="60" x2="142" y2="60"/><line x1="267" y1="60" x2="282" y2="60"/><line x1="407" y1="60" x2="422" y2="60"/>
+        <line x1="547" y1="60" x2="562" y2="60"/><line x1="687" y1="60" x2="702" y2="60"/><line x1="827" y1="60" x2="842" y2="60"/>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Steps 1 to 6 run for every sample, 100 times a second. Step 7 runs once a second and uses the intervals collected by step 6.</figcaption>
+  </figure>
+
+  <div class="steps">
+    <article class="step c-bus"><div class="n">1</div><div class="body">
+      <h3>Read every sample <small>pumpSensor(), read18()</small></h3>
+      <p>The MAX30102 keeps up to 32 samples in its own memory (the FIFO). The code reads three registers in one go, starting at <code>0x04</code>: the write pointer, the overflow counter and the read pointer. The difference between the pointers is how many new samples are waiting.</p>
+      <ul class="tight">
+        <li>Samples are read 5 at a time: 5 × 6 bytes = 30 bytes, which fits the Nano's 32-byte I²C buffer.</li>
+        <li>Each sample is Red (3 bytes) then IR (3 bytes). <code>read18()</code> joins the bytes and keeps the 18 data bits (<code>&amp; 0x3FFFF</code>).</li>
+        <li>The block is copied into <code>redBuf</code> and <code>irBuf</code> first and processed afterwards, so no other I²C message (such as an LED change) can interrupt a read.</li>
+        <li>If the overflow counter is not 0, samples were lost and are added to <code>samplesLost</code>.</li>
+      </ul>
+<pre><code class="language-cpp">byte count = (wr - rd) &amp; 0x1F;          // samples waiting (pointers wrap at 32)
+if (ovf &gt; 0) {
+  if (count == 0) count = 32;           // FIFO completely full
+  if (fingerPresent) samplesLost += ovf;
+}</code></pre>
+    </div></article>
+
+    <article class="step c-bus"><div class="n">2</div><div class="body">
+      <h3>Is a finger there? <small>handleSample()</small></h3>
+      <p>Every sample first adds 10 ms to <code>sampleClock</code>. Then the IR level decides whether a finger is present. A finger reflects much more infrared light than open air.</p>
+      <ul class="tight">
+        <li><strong>No finger yet:</strong> IR above <code>20000</code> for 10 samples in a row (0.1 s) calls <code>startMeasurement()</code>.</li>
+        <li><strong>Finger present:</strong> IR below the off level for 25 samples (0.25 s) prints <em>FINGER REMOVED</em> and calls <code>resetMeasurement()</code>.</li>
+        <li>The off level follows the LED current: <code>12000 × irPower / 0x1F</code>. A dimmer LED gives lower readings, so the threshold moves down with it.</li>
+      </ul>
+    </div></article>
+
+    <article class="step c-heart"><div class="n">3</div><div class="body">
+      <h3>Settle and tune the LEDs <small>processSample(), tunedPower()</small></h3>
+      <p>For the first <code>400 ms</code> after a finger arrives, no beats are counted. The baseline follows fast (<code>DC_ALPHA_FAST = 0.1</code>) and the LED currents are adjusted so the signal is strong but not clipped.</p>
+      <ul class="tight">
+        <li>Every 5 samples (50 ms), each LED is checked. If its raw level is outside 100,000 to 200,000, the new current is <code>power × 150000 ÷ level</code>, kept between 0x04 and 0x7F.</li>
+        <li>IR and Red are tuned separately. The SpO2 maths divides each colour by its own level, so they do not need equal currents.</li>
+        <li>At most 6 changes per measurement. After a change, 6 samples are skipped (they were taken with the old current) and the filters restart.</li>
+      </ul>
+      <div class="example">level 60,000 at power 0x1F (31)  →  31 × 150000 ÷ 60000 = 77 = 0x4D</div>
+    </div></article>
+
+    <article class="step c-heart"><div class="n">4</div><div class="body">
+      <h3>Clean the signal <small>processSample(), lowPass()</small></h3>
+      <p>The raw IR value is a large steady level (the <em>DC</em>, around 100,000 to 200,000) with a tiny heartbeat ripple on top (the <em>AC</em>, often under 1%).</p>
+      <ol class="tight">
+        <li><strong>Remove the baseline.</strong> <code>irDC</code> follows the raw value slowly (<code>DC_ALPHA = 0.02</code>, about 0.5 s). Subtracting it leaves only the ripple.</li>
+        <li><strong>Flip it.</strong> Blood absorbs light, so each beat makes the reading drop. <code>irDC − ir</code> turns every beat into an upward bump.</li>
+        <li><strong>Smooth it.</strong> <code>lowPass()</code> is a 2nd-order Butterworth filter at 5 Hz. It removes fast noise and delays every beat by the same amount, so the time between beats is unchanged.</li>
+      </ol>
+<pre><code class="language-cpp">irDC += alpha * ((float)ir - irDC);      // slow baseline
+irAC  = lowPass(irDC - (float)ir, irLP); // flipped, filtered heartbeat</code></pre>
+      <p>Three safety checks also run here:</p>
+      <ul class="tight">
+        <li><strong>Clipped:</strong> raw IR or Red above <code>260000</code> marks the next 0.5 s as clipped.</li>
+        <li><strong>Moved:</strong> every 0.5 s, if <code>irDC</code> changed by more than 3%, beats are ignored for 1 s.</li>
+        <li><strong>Lost:</strong> no accepted beat for 3 s calls <code>signalLost()</code>, which clears the history so the screen shows <code>--</code> instead of an old number.</li>
+      </ul>
+    </div></article>
+
+    <article class="step c-heart"><div class="n">5</div><div class="body">
+      <h3>Find each beat <small>peak / valley detector in processSample()</small></h3>
+      <p>The detector switches between two states: <em>looking for a valley</em> and <em>looking for a peak</em>. It only accepts a turn when the wave has moved back by the <strong>hysteresis</strong>: 30% of a typical beat, and never less than 40. Small wiggles and the second bump of each heartbeat (the dicrotic notch) are too small to count.</p>
+      <figure style="padding:12px">
+        <div class="scroll">
+        <svg viewBox="0 0 640 230" width="640" style="max-width:100%;height:auto;min-width:480px" role="img" aria-label="Pulse waveform with valley, steepest rise, peak and the interval between beats">
+          <line x1="40" y1="170" x2="620" y2="170" stroke="var(--line)"/>
+          <path d="M40.0,167.6 L41.5,167.0 L42.9,166.2 L44.4,165.2 L45.8,164.0 L47.2,162.6 L48.7,161.0 L50.1,159.0 L51.6,156.7 L53.0,154.1 L54.5,151.1 L56.0,147.7 L57.4,143.9 L58.9,139.6 L60.3,134.9 L61.8,129.8 L63.2,124.3 L64.7,118.4 L66.1,112.2 L67.5,105.7 L69.0,99.0 L70.5,92.2 L71.9,85.4 L73.4,78.7 L74.8,72.2 L76.2,66.0 L77.7,60.2 L79.2,55.0 L80.6,50.4 L82.0,46.5 L83.5,43.5 L85.0,41.4 L86.4,40.2 L87.8,40.0 L89.3,40.7 L90.8,42.4 L92.2,45.1 L93.7,48.5 L95.1,52.8 L96.6,57.7 L98.0,63.3 L99.4,69.3 L100.9,75.7 L102.3,82.3 L103.8,89.1 L105.2,95.9 L106.7,102.6 L108.1,109.2 L109.6,115.6 L111.0,121.6 L112.5,127.3 L114.0,132.6 L115.4,137.5 L116.9,142.0 L118.3,146.0 L119.8,149.6 L121.2,152.8 L122.6,155.6 L124.1,158.0 L125.5,160.1 L127.0,161.9 L128.4,163.4 L129.9,164.6 L131.3,165.7 L132.8,166.5 L134.2,167.2 L135.7,167.6 L137.2,168.0 L138.6,168.2 L140.1,168.3 L141.5,168.3 L142.9,168.1 L144.4,167.8 L145.8,167.3 L147.3,166.7 L148.8,165.9 L150.2,164.9 L151.7,163.7 L153.1,162.3 L154.6,160.6 L156.0,158.7 L157.4,156.6 L158.9,154.2 L160.3,151.7 L161.8,149.0 L163.2,146.3 L164.7,143.5 L166.2,140.7 L167.6,138.1 L169.1,135.6 L170.5,133.4 L172.0,131.5 L173.4,130.0 L174.8,129.0 L176.3,128.5 L177.7,128.4 L179.2,128.9 L180.6,129.9 L182.1,131.3 L183.5,133.2 L185.0,135.4 L186.4,137.8 L187.9,140.5 L189.3,143.2 L190.8,146.0 L192.2,148.8 L193.7,151.5 L195.2,154.0 L196.6,156.4 L198.1,158.5 L199.5,160.5 L201.0,162.2 L202.4,163.7 L203.8,164.9 L205.3,166.0 L206.8,166.9 L208.2,167.6 L209.6,168.1 L211.1,168.6 L212.5,169.0 L214.0,169.2 L215.4,169.4 L216.9,169.6 L218.3,169.7 L219.8,169.8 L221.2,169.9 L222.7,169.9 L224.2,169.9 L225.6,170.0 L227.1,170.0 L228.5,170.0 L230.0,170.0 L231.4,170.0 L232.9,170.0 L234.3,170.0 L235.8,170.0 L237.2,170.0 L238.7,170.0 L240.1,170.0 L241.5,170.0 L243.0,170.0 L244.4,170.0 L245.9,170.0 L247.3,170.0 L248.8,170.0 L250.2,170.0 L251.7,170.0 L253.2,170.0 L254.6,170.0 L256.1,170.0 L257.5,170.0 L258.9,170.0 L260.4,170.0 L261.9,170.0 L263.3,170.0 L264.8,170.0 L266.2,170.0 L267.6,170.0 L269.1,170.0 L270.6,170.0 L272.0,170.0 L273.5,170.0 L274.9,170.0 L276.4,170.0 L277.8,170.0 L279.2,170.0 L280.7,170.0 L282.1,170.0 L283.6,170.0 L285.0,170.0 L286.5,170.0 L287.9,170.0 L289.4,170.0 L290.9,170.0 L292.3,170.0 L293.8,170.0 L295.2,170.0 L296.6,170.0 L298.1,170.0 L299.6,170.0 L301.0,170.0 L302.4,170.0 L303.9,167.5 L305.4,166.8 L306.8,166.0 L308.2,165.0 L309.7,163.8 L311.2,162.4 L312.6,160.6 L314.1,158.6 L315.5,156.3 L316.9,153.6 L318.4,150.5 L319.8,147.0 L321.3,143.1 L322.8,138.8 L324.2,134.0 L325.6,128.8 L327.1,123.2 L328.6,117.3 L330.0,111.0 L331.4,104.5 L332.9,97.8 L334.3,91.0 L335.8,84.2 L337.2,77.5 L338.7,71.0 L340.1,64.9 L341.6,59.2 L343.0,54.1 L344.5,49.6 L345.9,45.9 L347.4,43.1 L348.8,41.1 L350.3,40.1 L351.8,40.1 L353.2,41.0 L354.6,42.9 L356.1,45.6 L357.6,49.3 L359.0,53.6 L360.4,58.7 L361.9,64.3 L363.4,70.4 L364.8,76.9 L366.2,83.5 L367.7,90.3 L369.1,97.1 L370.6,103.9 L372.1,110.4 L373.5,116.7 L374.9,122.7 L376.4,128.3 L377.9,133.6 L379.3,138.4 L380.8,142.7 L382.2,146.7 L383.7,150.2 L385.1,153.3 L386.6,156.1 L388.0,158.4 L389.5,160.5 L390.9,162.2 L392.4,163.6 L393.8,164.8 L395.2,165.8 L396.7,166.6 L398.2,167.3 L399.6,167.7 L401.1,168.0 L402.5,168.2 L403.9,168.3 L405.4,168.2 L406.8,168.0 L408.3,167.7 L409.8,167.2 L411.2,166.6 L412.6,165.7 L414.1,164.7 L415.5,163.4 L417.0,162.0 L418.4,160.3 L419.9,158.3 L421.3,156.2 L422.8,153.8 L424.2,151.2 L425.7,148.6 L427.1,145.8 L428.6,143.0 L430.1,140.2 L431.5,137.6 L432.9,135.2 L434.4,133.0 L435.9,131.2 L437.3,129.8 L438.8,128.9 L440.2,128.4 L441.6,128.5 L443.1,129.1 L444.6,130.1 L446.0,131.7 L447.4,133.6 L448.9,135.8 L450.4,138.3 L451.8,141.0 L453.2,143.7 L454.7,146.5 L456.2,149.3 L457.6,152.0 L459.1,154.5 L460.5,156.8 L462.0,158.9 L463.4,160.8 L464.9,162.5 L466.3,163.9 L467.8,165.1 L469.2,166.2 L470.7,167.0 L472.1,167.7 L473.6,168.2 L475.0,168.7 L476.4,169.0 L477.9,169.3 L479.3,169.5 L480.8,169.6 L482.2,169.7 L483.7,169.8 L485.1,169.9 L486.6,169.9 L488.0,169.9 L489.5,170.0 L490.9,170.0 L492.4,170.0 L493.8,170.0 L495.3,170.0 L496.8,170.0 L498.2,170.0 L499.6,170.0 L501.1,170.0 L502.6,170.0 L504.0,170.0 L505.4,170.0 L506.9,170.0 L508.4,170.0 L509.8,170.0 L511.2,170.0 L512.7,170.0 L514.1,170.0 L515.6,170.0 L517.0,170.0 L518.5,170.0 L520.0,170.0 L521.4,170.0 L522.9,170.0 L524.3,170.0 L525.8,170.0 L527.2,170.0 L528.7,170.0 L530.1,170.0 L531.5,170.0 L533.0,170.0 L534.5,170.0 L535.9,170.0 L537.4,170.0 L538.8,170.0 L540.2,170.0 L541.7,170.0 L543.2,170.0 L544.6,170.0 L546.0,170.0 L547.5,170.0 L549.0,170.0 L550.4,170.0 L551.8,170.0 L553.3,170.0 L554.8,170.0 L556.2,170.0 L557.6,170.0 L559.1,170.0 L560.5,170.0 L562.0,170.0 L563.4,170.0 L564.9,170.0 L566.4,170.0 L567.8,167.4 L569.2,166.7 L570.7,165.8 L572.1,164.8 L573.6,163.6 L575.0,162.1 L576.5,160.3 L578.0,158.2 L579.4,155.8 L580.9,153.1 L582.3,149.9 L583.7,146.4 L585.2,142.4 L586.6,137.9 L588.1,133.1 L589.5,127.8 L591.0,122.2 L592.5,116.1 L593.9,109.8 L595.3,103.3 L596.8,96.5 L598.2,89.7 L599.7,82.9 L601.1,76.3 L602.6,69.9 L604.1,63.8 L605.5,58.2 L606.9,53.2 L608.4,48.9 L609.9,45.3 L611.3,42.6 L612.8,40.9 L614.2,40.0 L615.7,40.2 L617.1,41.3 L618.5,43.3 L620.0,46.2" fill="none" stroke="var(--heart)" stroke-width="3" stroke-linejoin="round"/>
+          <circle cx="302.4" cy="170" r="6" fill="var(--surface)" stroke="var(--ink)" stroke-width="2"/>
+          <text x="302" y="194" text-anchor="middle" font-size="13" fill="var(--ink)">valley</text>
+          <circle cx="351.8" cy="40.1" r="6" fill="var(--surface)" stroke="var(--ink)" stroke-width="2"/>
+          <text x="362" y="36" font-size="13" fill="var(--ink)">peak</text>
+          <circle cx="332.9" cy="97.8" r="7" fill="var(--heart)"/>
+          <text x="226" y="94" font-size="13" font-weight="700" fill="var(--heart)">beat time</text>
+          <text x="210" y="110" font-size="11" fill="var(--muted)">(steepest rise)</text>
+          <circle cx="70.5" cy="92.2" r="7" fill="var(--heart)"/>
+          <circle cx="440.2" cy="128.4" r="5" fill="var(--surface)" stroke="var(--muted)" stroke-width="2"/>
+          <text x="452" y="122" font-size="12" fill="var(--muted)">dicrotic notch, ignored</text>
+          <line x1="70.5" y1="212" x2="332.9" y2="212" stroke="var(--disp)" stroke-width="2"/>
+          <line x1="70.5" y1="204" x2="70.5" y2="220" stroke="var(--disp)" stroke-width="2"/>
+          <line x1="332.9" y1="204" x2="332.9" y2="220" stroke="var(--disp)" stroke-width="2"/>
+          <text x="201" y="206" text-anchor="middle" font-size="12" fill="var(--disp)">one interval (IBI) in ms</text>
+        </svg>
+        </div>
+        <figcaption>The beat is timed at the steepest point of the rise, not at the rounded top, because that moment is much sharper.</figcaption>
+      </figure>
+      <ul class="tight">
+        <li>While the wave rises, the code remembers the largest slope and when it happened (<code>maxSlope</code>, <code>maxSlopeTime</code>).</li>
+        <li>When the peak is confirmed, a parabola through the three slopes around that point finds the true moment between two samples. That gives about 1 ms precision instead of 10 ms.</li>
+        <li>The pulse size is <code>peak − valley</code>. The Red signal is sampled at the same two moments, for SpO2.</li>
+      </ul>
+<pre><code class="language-cpp">float denom = slopeBeforeMax - 2 * maxSlope + slopeAfterMax;
+if (denom &lt; 0) offset = 0.5 * (slopeBeforeMax - slopeAfterMax) / denom;  // -0.5 .. +0.5 sample
+unsigned long beatTime = maxSlopeTime + (long)(offset * SAMPLE_MS + 0.5);</code></pre>
+    </div></article>
+
+    <article class="step c-heart"><div class="n">6</div><div class="body">
+      <h3>Check the beat, then count it <small>onPulse(), addInterval()</small></h3>
+      <p>Every candidate beat passes these checks in order. The first one that fails decides what happens.</p>
+      <ul class="gates">
+        <li><span class="k">A</span><span>Pulse smaller than <code>80</code></span><span class="pill skip">ignored as noise</span></li>
+        <li><span class="k">B</span><span>Less than <code>300 ms</code> since the last beat (faster than 200 BPM)</span><span class="pill skip">ignored</span></li>
+        <li><span class="k">C</span><span>Perfusion index (pulse ÷ DC × 100) below <code>0.15%</code>: <em>weak</em></span><span class="pill rej">rejected</span></li>
+        <li><span class="k">D</span><span>During a motion pause or clipping</span><span class="pill rej">rejected</span></li>
+        <li><span class="k">E</span><span>Smaller than 0.3 × the usual pulse</span><span class="pill rej">rejected</span></li>
+        <li><span class="k">F</span><span>Bigger than 3 × the usual pulse. Two in a row means the pulse really got stronger, so the usual size is learned again.</span><span class="pill rej">rejected once</span></li>
+        <li><span class="k">✓</span><span>Passed: the usual size is updated (80% old + 20% new), the heart icon flashes, SpO2 gets a new ratio.</span><span class="pill acc">accepted</span></li>
+      </ul>
+      <p>An accepted beat gives an interval: the time since the previous beat. That interval is then handled like this:</p>
+      <ul class="tight">
+        <li><strong>First beat:</strong> only its time is stored.</li>
+        <li><strong>About 2 or 3 normal intervals long:</strong> weak beats in between were missed, so the gap is split into equal parts.</li>
+        <li><strong>No history yet and 1.5 to 3 s long:</strong> treated as one missed beat and halved.</li>
+        <li><strong>Up to 1.5 s (40 BPM or faster):</strong> passed to <code>addInterval()</code>.</li>
+      </ul>
+      <p><code>addInterval()</code> compares the interval with the median of the stored ones. More than 25% away counts as an odd interval and is not stored. Three odd ones in a row mean the heart rate really changed, so the history is cleared and starts again. Good intervals go into a ring of the last 8 (<code>ibi[]</code>) and into the 30-second total.</p>
+    </div></article>
+
+    <article class="step c-disp"><div class="n">7</div><div class="body">
+      <h3>Turn intervals into BPM <small>computeBPM(), once a second</small></h3>
+      <p>The last 8 intervals are sorted. With 5 or more, the shortest and the longest are dropped (a <em>trimmed mean</em>), so one badly timed beat cannot pull the number. Then BPM is 60,000 ms divided by the average interval.</p>
+      <div class="example">intervals (ms): 820 830 835 840 845 850 860 1000
+drop shortest and longest → 830 835 840 845 850 860
+sum = 5060 over 6 intervals
+BPM = 60000 × 6 ÷ 5060 = 71.1  →  71 BPM</div>
+<pre><code class="language-cpp">return (int)(60000.0 * CLOCK_FIX * n / sum + 0.5);</code></pre>
+    </div></article>
+  </div>
+</section>
+
+<!-- 04 AVERAGE -->
+<section id="average" class="c-heart">
+  <div class="eyebrow">04 · Rolling average</div>
+  <h2>The 30-second average</h2>
+  <p>The measurement is split into back-to-back 30-second cycles, counted from the moment the finger arrives. The clock in the bottom-right corner of the screen counts 0 to 29 s and starts again.</p>
+  <ul class="tight">
+    <li>During a cycle, every good interval is added to <code>intervalSumCycle</code> and counted in <code>intervalCountCycle</code>.</li>
+    <li>When a cycle ends, <code>averageBPM()</code> computes <code>60000 × count ÷ total</code>. This uses every good beat in the cycle, so it is steadier than the live number.</li>
+    <li>The result is stored in <code>lastAvg</code>, shown on screen as <em>Avg:71bpm</em> (when no warning is showing), and printed as a <code>--- 30s AVG ---</code> block on Serial.</li>
+    <li>The cycle counters then reset and the next cycle starts. The average keeps refreshing every 30 s for as long as the finger stays on.</li>
+  </ul>
+  <div class="example">a 30 s cycle with 36 good intervals totalling 30,240 ms
+average = 60000 × 36 ÷ 30240 = 71.4  →  Avg:71bpm</div>
+</section>
+
+<!-- 05 SPO2 -->
+<section id="spo2" class="c-oxy">
+  <div class="eyebrow">05 · Blood oxygen</div>
+  <h2>How SpO2 is estimated</h2>
+  <p>Oxygen-rich blood absorbs less red light than oxygen-poor blood, while infrared is affected much less. Comparing how strongly the pulse shows up in each colour gives a ratio called <strong>R</strong>.</p>
+  <div class="example">R = (redPulse ÷ redDC) ÷ (irPulse ÷ irDC)
+SpO2 = 110 − 25 × R</div>
+  <ol class="tight">
+    <li><code>updateSpO2()</code> runs for every accepted beat and computes R from that beat.</li>
+    <li>Ratios outside 0.1 to 2.0 are impossible and are dropped.</li>
+    <li>The last 8 ratios are kept. Their median is used (the average of the middle two when the count is even), so one bad beat cannot move it.</li>
+    <li>After 2 good beats, SpO2 = 110 − 25 × median R, rounded.</li>
+  </ol>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Median R</th><th>Formula result</th><th>Shown on screen</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0.40</td><td class="num">100%</td><td class="num">97%</td></tr>
+      <tr><td class="num">0.52</td><td class="num">97%</td><td class="num">97%</td></tr>
+      <tr><td class="num">0.60</td><td class="num">95%</td><td class="num">95%</td></tr>
+      <tr><td class="num">0.80</td><td class="num">90%</td><td class="num">90%</td></tr>
+      <tr><td class="num">0.90</td><td class="num">88%</td><td class="num">--</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="callout c-oxy">
+    <strong>The 90 to 97% window is a display rule</strong>
+    <p>This version caps the shown value at <code>SPO2_MAX_SHOWN = 97</code> and hides anything below <code>SPO2_MIN_SHOWN = 90</code> as <code>--</code>. So a reading of 97% means "97 or higher", and <code>--</code> can mean either "not enough beats yet" or "the formula gave under 90". The real ratio is always printed on Serial as <code>Rx1000</code>.</p>
+  </div>
+  <p class="muted">To calibrate, compare with a pharmacy fingertip oximeter: <code>SPO2_A = oximeter SpO2 + 25 × R</code>, averaged over many sessions. SpO2 from this sensor stays an estimate.</p>
+</section>
+
+<!-- 06 TEMP -->
+<section id="temp" class="c-temp">
+  <div class="eyebrow">06 · Temperature</div>
+  <h2>Reading the GY-906 directly</h2>
+  <p>The MLX90614 is read with the plain Wire library instead of an extra library, which saves program space. <code>updateTemperature()</code> asks for register <code>0x07</code> (object temperature) every 500 ms.</p>
+  <div class="two">
+    <div class="callout c-temp">
+      <strong>The I²C conversation</strong>
+      <ol class="tight">
+        <li>Send the register number <code>0x07</code> with a <em>repeated start</em> (<code>endTransmission(false)</code>), as the MLX90614 requires.</li>
+        <li>Read 3 bytes: low byte, high byte, and a checksum (PEC) that is skipped.</li>
+        <li>If bit 15 is set, the sensor reports an error and the old value is kept.</li>
+      </ol>
+    </div>
+    <div class="callout c-temp">
+      <strong>Integer maths, no floats</strong>
+      <p>The sensor counts in steps of 0.02 Kelvin. The code keeps temperature in tenths of a degree, which avoids slow, large floating-point code.</p>
+      <div class="example">tenths = (2 × raw − 27315) ÷ 10  (rounded)
+raw 15475 → (30950 − 27315) ÷ 10 = 364 → 36.4 °C</div>
+    </div>
+  </div>
+  <p>Before the first reading, <code>currentTempTenths</code> is <code>-9999</code>, which the screen and Serial show as <code>--</code>. With nothing in front of it, the sensor sees the room, so the reading is close to air temperature. A finger or object in front switches it to that surface temperature.</p>
+</section>
+
+<!-- 07 SCREEN -->
+<section id="screen" class="c-disp">
+  <div class="eyebrow">07 · Screen and buzzer</div>
+  <h2>What the OLED shows</h2>
+  <p>The SSD1306 is 128 × 64 pixels. U8g2 draws it in 8 strips (page mode) to save memory, and <code>pumpSensor()</code> runs between strips so no samples pile up while the screen is sent.</p>
+  <div class="screens">
+    <figure>
+      <div class="oled">
+      <svg viewBox="0 0 128 64" role="img" aria-label="Welcome screen mock-up">
+        <g fill="none" stroke="var(--oled-px)" stroke-width="1"><path d="M6 4 L7 3 L9 4 M12 4 L13 3 L15 4 M5 7 L11 13 L17 7"/></g>
+        <text x="22" y="14" font-size="9">Welcome!</text>
+        <text x="22" y="25" font-size="9">Health Monitor</text>
+        <line x1="0" y1="29.5" x2="128" y2="29.5" stroke="var(--oled-px)"/>
+        <rect x="6.5" y="34.5" width="6" height="12" fill="none" stroke="var(--oled-px)"/><circle cx="9.5" cy="47" r="3.5" fill="var(--oled-px)"/>
+        <text x="18" y="46" font-size="9">Temp:24.8C</text>
+        <line x1="0" y1="51.5" x2="128" y2="51.5" stroke="var(--oled-px)"/>
+        <text x="6" y="62" font-size="8.4">Put finger on sensor</text>
+      </svg>
+      </div>
+      <figcaption><strong>Welcome screen</strong> (no finger): outline heart, title, live temperature, instruction.</figcaption>
+    </figure>
+    <figure>
+      <div class="oled">
+      <svg viewBox="0 0 128 64" role="img" aria-label="Measurement screen mock-up">
+        <g fill="var(--oled-px)"><rect x="4" y="2" width="4" height="4"/><rect x="10" y="2" width="4" height="4"/><rect x="2" y="5" width="14" height="5"/><rect x="4" y="10" width="10" height="4"/><rect x="7" y="14" width="4" height="3"/></g>
+        <text x="18" y="12" font-size="9">HR:72bpm</text>
+        <text x="18" y="24" font-size="9">Avg:71bpm</text>
+        <text x="126" y="12" font-size="9" text-anchor="end">T:36.4C</text>
+        <polyline fill="none" stroke="var(--oled-px)" stroke-width="1" points="0,38 4,39 8,40 12,40 16,41 20,40 24,39 28,38 32,37 36,36 40,36 44,35 48,36 52,36 56,37 60,38 62,36 64,38 66,40 68,30 70,42 72,36 74,38 78,39 82,40 86,40 90,41 94,40 98,39 102,38 106,37 110,36 114,36 118,35 122,36 126,37"/>
+        <text x="2" y="62" font-size="9">SpO2:97%</text>
+        <text x="126" y="62" font-size="9" text-anchor="end">12s</text>
+      </svg>
+      </div>
+      <figcaption><strong>Measurement screen</strong>: live BPM, line 2 (average or warning), temperature, wave, SpO2, cycle clock.</figcaption>
+    </figure>
+  </div>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Status</th><th>When</th><th>Line 2 on screen</th><th>Serial word</th></tr></thead>
+    <tbody>
+      <tr><td>Clipped</td><td>raw value above 260,000 in the last 0.5 s</td><td><em>Press lighter</em></td><td><code>clip</code></td></tr>
+      <tr><td>Moving</td><td>baseline jumped more than 3% in 0.5 s (1 s pause)</td><td><em>Hold still</em></td><td><code>move</code></td></tr>
+      <tr><td>Weak</td><td>last pulse under 0.15% perfusion</td><td><em>Weak pulse</em></td><td><code>weak</code></td></tr>
+      <tr><td>OK</td><td>none of the above, or still settling</td><td><em>Avg:71bpm</em> once a cycle has finished</td><td><code>ok</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="muted">The checks run in this order, so <em>Press lighter</em> wins over <em>Hold still</em>, which wins over <em>Weak pulse</em>.</p>
+
+  <div class="two">
+    <div class="callout c-disp">
+      <strong>The moving wave</strong>
+      <p>The wave is a drawing, not a real ECG. <code>ecgWave[]</code> holds 64 points, drawn 2 pixels apart. Every 25 ms it shifts one step left, so the screen shows 1.6 s. Normally it repeats a gentle 16-step idle pattern; on each accepted beat it inserts an 8-step spike. Both patterns are stored in flash with <code>PROGMEM</code> to save memory.</p>
+    </div>
+    <div class="callout c-disp">
+      <strong>The buzzer</strong>
+      <p><code>updateEverySecond()</code> plays a short 70 ms tone at 1568 Hz (the note G6) once a second, whenever a BPM value is available. The heart icon, by contrast, flashes on each accepted heartbeat.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 08 SERIAL -->
+<section id="serial" class="c-disp">
+  <div class="eyebrow">08 · Serial output</div>
+  <h2>What the Serial line says</h2>
+  <p>At 115200 baud, the sketch prints plain text. The laptop dashboard reads these exact lines.</p>
+<div class="serial">MAX30102 FOUND
+MLX90614 FOUND
+Waiting... IR=2950 Temp=248
+
+FINGER DETECTED
+12s BPM=72 SpO2=97 Rx1000=521 PI=84 Temp=364 ok
+13s BPM=72 SpO2=97 Rx1000=519 PI=86 Temp=364 ok
+--- 30s AVG ---
+Avg BPM: 71
+Used/Rejected: 34/2
+Avg SpO2: 97
+FINGER REMOVED</div>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Field</th><th>Example</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>12s</code></td><td class="num">12s</td><td>Second within the current 30 s cycle (0 to 29).</td></tr>
+      <tr><td><code>BPM</code></td><td class="num">72</td><td>Live heart rate (trimmed mean of the last 8 intervals). 0 until the first interval.</td></tr>
+      <tr><td><code>SpO2</code></td><td class="num">97</td><td>Shown SpO2 (90 to 97 window). 0 means not shown.</td></tr>
+      <tr><td><code>Rx1000</code></td><td class="num">521</td><td>Median R × 1000, so 521 means R = 0.521. Use this for calibration.</td></tr>
+      <tr><td><code>PI</code></td><td class="num">84</td><td>Perfusion index × 100, so 84 means 0.84%.</td></tr>
+      <tr><td><code>Temp</code></td><td class="num">364</td><td>Temperature in tenths, so 364 means 36.4 °C. -9999 means not read yet.</td></tr>
+      <tr><td>last word</td><td class="num">ok</td><td>Signal status: <code>ok</code>, <code>weak</code>, <code>move</code> or <code>clip</code>.</td></tr>
+      <tr><td><code>Used/Rejected</code></td><td class="num">34/2</td><td>Good intervals in the cycle / odd intervals rejected by <code>addInterval()</code>.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="muted">Set <code>#define PLOT_SIGNAL 1</code> to replace all of this with one number per sample (the cleaned pulse) for the Arduino Serial Plotter.</p>
+</section>
+
+<!-- 09 SETTINGS -->
+<section id="settings">
+  <div class="eyebrow">09 · Settings</div>
+  <h2>Settings reference</h2>
+  <p>All the <code>const</code> values at the top of the sketch. Change one at a time and test again.</p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Setting</th><th>Value</th><th>What it controls</th></tr></thead>
+    <tbody>
+      <tr class="group-row c-bus"><td colspan="3">Sensor and bus</td></tr>
+      <tr><td><code>BUZZER_PIN</code></td><td class="num">8</td><td>Pin the buzzer is on.</td></tr>
+      <tr><td><code>PLOT_SIGNAL</code></td><td class="num">0</td><td>1 = stream the cleaned pulse for the Serial Plotter instead of text.</td></tr>
+      <tr><td><code>SENSOR_ADDR</code> / <code>MLX_ADDR</code></td><td class="num">0x57 / 0x5A</td><td>I²C addresses of the MAX30102 and MLX90614.</td></tr>
+      <tr><td><code>REG_FIFO_WR_PTR</code> / <code>REG_FIFO_DATA</code></td><td class="num">0x04 / 0x07</td><td>MAX30102 registers for the FIFO pointers and the sample data.</td></tr>
+      <tr><td><code>MLX_REG_TOBJ1</code></td><td class="num">0x07</td><td>MLX90614 object-temperature register.</td></tr>
+      <tr><td><code>TEMP_READ_INTERVAL</code></td><td class="num">500 ms</td><td>How often temperature is read.</td></tr>
+      <tr><td><code>SAMPLE_AVERAGE</code> / <code>SENSOR_SAMPLE_RATE</code></td><td class="num">4 / 400</td><td>400 samples/s averaged 4 at a time inside the chip = 100 clean samples/s.</td></tr>
+      <tr><td><code>SAMPLE_MS</code></td><td class="num">10 ms</td><td>Time per sample; must equal 1000 ÷ (400 ÷ 4).</td></tr>
+      <tr><td><code>CLOCK_FIX</code></td><td class="num">1.000</td><td>Correction if the sensor's clock runs slightly fast or slow. Multiplies every BPM.</td></tr>
+
+      <tr class="group-row c-heart"><td colspan="3">LED auto-tune</td></tr>
+      <tr><td><code>LED_POWER</code></td><td class="num">0x1F</td><td>Starting LED current, about 6.4 mA.</td></tr>
+      <tr><td><code>LED_POWER_MIN</code> / <code>MAX</code></td><td class="num">0x04 / 0x7F</td><td>Limits for auto-tune (about 0.8 to 25 mA).</td></tr>
+      <tr><td><code>DC_LOW</code> / <code>DC_HIGH</code> / <code>DC_TARGET</code></td><td class="num">100k / 200k / 150k</td><td>Good raw-level range and the level auto-tune aims for.</td></tr>
+      <tr><td><code>MAX_TUNE_STEPS</code></td><td class="num">6</td><td>Most LED changes per measurement.</td></tr>
+      <tr><td><code>SATURATION_LEVEL</code></td><td class="num">260,000</td><td>Above this the 18-bit reading (max 262,143) is clipped.</td></tr>
+
+      <tr class="group-row c-bus"><td colspan="3">Finger detection</td></tr>
+      <tr><td><code>FINGER_ON_LEVEL</code></td><td class="num">20,000</td><td>IR level that means "finger present". Must be well above the no-finger value printed on Serial.</td></tr>
+      <tr><td><code>FINGER_OFF_LEVEL</code></td><td class="num">12,000</td><td>IR level that means "finger gone" (scaled with LED current).</td></tr>
+      <tr><td><code>FINGER_ON_SAMPLES</code> / <code>OFF_SAMPLES</code></td><td class="num">10 / 25</td><td>How long the level must hold: 0.1 s to start, 0.25 s to stop.</td></tr>
+
+      <tr class="group-row c-heart"><td colspan="3">Beat detection</td></tr>
+      <tr><td><code>SETTLE_MS</code></td><td class="num">400 ms</td><td>Settle and LED-tune time before beats count.</td></tr>
+      <tr><td><code>DC_ALPHA_FAST</code> / <code>DC_ALPHA</code></td><td class="num">0.1 / 0.02</td><td>How fast the baseline follows, during and after settling.</td></tr>
+      <tr><td><code>MIN_HYSTERESIS</code></td><td class="num">40</td><td>Smallest turn in the wave that counts as a peak or valley.</td></tr>
+      <tr><td><code>MIN_PULSE_AMPLITUDE</code></td><td class="num">80</td><td>Smallest valley-to-peak size that can be a beat.</td></tr>
+      <tr><td><code>MIN_BEAT_INTERVAL</code> / <code>MAX_BEAT_INTERVAL</code></td><td class="num">300 / 1500 ms</td><td>Allowed range: 200 BPM to 40 BPM.</td></tr>
+      <tr><td><code>SIGNAL_LOST_MS</code></td><td class="num">3000 ms</td><td>No beat for this long clears the history and shows <code>--</code>.</td></tr>
+      <tr><td><code>INTERVAL_TOLERANCE</code></td><td class="num">0.25</td><td>An interval may differ 25% from the median before it counts as odd.</td></tr>
+
+      <tr class="group-row c-heart"><td colspan="3">Quality checks</td></tr>
+      <tr><td><code>MIN_PERFUSION</code></td><td class="num">0.15%</td><td>Weaker pulses are rejected as <em>weak</em>. Lower it if a cold finger always reads weak.</td></tr>
+      <tr><td><code>MOTION_LIMIT</code> / <code>MOTION_HOLD_MS</code></td><td class="num">3% / 1000 ms</td><td>Baseline jump that means the finger moved, and how long beats are ignored after.</td></tr>
+      <tr><td><code>SATURATION_HOLD_MS</code></td><td class="num">500 ms</td><td>How long after clipping beats are ignored.</td></tr>
+      <tr><td><code>IRREGULAR_LIMIT</code></td><td class="num">0.15</td><td>Not used anywhere in this version.</td></tr>
+
+      <tr class="group-row c-oxy"><td colspan="3">Blood oxygen</td></tr>
+      <tr><td><code>SPO2_A</code> / <code>SPO2_B</code></td><td class="num">110 / 25</td><td>SpO2 = A − B × R. Calibrate A against a real oximeter.</td></tr>
+      <tr><td><code>SPO2_MIN_BEATS</code></td><td class="num">2</td><td>Good beats needed before SpO2 is computed.</td></tr>
+      <tr><td><code>SPO2_MAX_SHOWN</code> / <code>SPO2_MIN_SHOWN</code></td><td class="num">97 / 90</td><td>Display window: higher shows as 97, lower shows as <code>--</code>.</td></tr>
+
+      <tr class="group-row c-disp"><td colspan="3">Timing</td></tr>
+      <tr><td><code>AVG_CYCLE</code></td><td class="num">30,000 ms</td><td>Length of one averaging cycle.</td></tr>
+      <tr><td><code>DISPLAY_INTERVAL</code></td><td class="num">100 ms</td><td>Screen redraw period (10 frames/s).</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- 10 FUNCTIONS -->
+<section id="functions">
+  <div class="eyebrow">10 · Functions</div>
+  <h2>Function reference</h2>
+  <p>Every function in the sketch. Type to search, or pick a part of the program.</p>
+  <div class="fn-tools">
+    <label for="fn-search" class="note" style="flex-basis:100%">Search functions</label>
+    <input id="fn-search" type="search" placeholder="Try: beat, SpO2, screen, I2C" autocomplete="off">
+    <button type="button" class="all" data-group="all" aria-pressed="true"><i></i>All</button>
+    <button type="button" class="c-heart" data-group="heart" aria-pressed="false"><i></i>Heart rate</button>
+    <button type="button" class="c-oxy" data-group="oxy" aria-pressed="false"><i></i>SpO2</button>
+    <button type="button" class="c-temp" data-group="temp" aria-pressed="false"><i></i>Temperature</button>
+    <button type="button" class="c-disp" data-group="disp" aria-pressed="false"><i></i>Screen and output</button>
+    <button type="button" class="c-bus" data-group="bus" aria-pressed="false"><i></i>Control</button>
+  </div>
+  <div class="fns" id="fns">
+    <div class="fn c-bus" data-group="bus"><div class="sig">setup()</div><p>Starts Serial, the OLED and the MAX30102, configures the sensor, checks the MLX90614 and resets everything. Stops with <em>SENSOR ERROR</em> if the MAX30102 is missing.</p><div class="by">Called by: Arduino, once</div></div>
+    <div class="fn c-bus" data-group="bus"><div class="sig">loop()</div><p>Runs forever. Reads the sensor, reads temperature, then either shows the welcome screen or runs the measurement jobs on their timers.</p><div class="by">Called by: Arduino, repeatedly</div></div>
+    <div class="fn c-bus" data-group="bus"><div class="sig">pumpSensor()</div><p>Reads the FIFO pointers and overflow counter, then every waiting sample in blocks of 5, and hands each to <code>handleSample()</code>.</p><div class="by">Called by: <code>loop()</code>, both draw functions</div></div>
+    <div class="fn c-bus" data-group="bus"><div class="sig">read18() → uint32_t</div><p>Reads 3 bytes from Wire and keeps the 18 data bits of one reading.</p><div class="by">Called by: <code>pumpSensor()</code></div></div>
+    <div class="fn c-bus" data-group="bus"><div class="sig">handleSample(ir, red)</div><p>Advances <code>sampleClock</code> by 10 ms, detects the finger arriving or leaving, and passes samples on while a finger is present.</p><div class="by">Called by: <code>pumpSensor()</code></div></div>
+    <div class="fn c-bus" data-group="bus"><div class="sig">startMeasurement()</div><p>Resets everything, marks the finger present, records the start time and prints <em>FINGER DETECTED</em>.</p><div class="by">Called by: <code>handleSample()</code></div></div>
+    <div class="fn c-bus" data-group="bus"><div class="sig">resetMeasurement()</div><p>Clears all measurement state, the 30 s cycle, the counters and the wave, and sets both LEDs back to <code>LED_POWER</code>.</p><div class="by">Called by: <code>setup()</code>, finger removed, <code>startMeasurement()</code></div></div>
+    <div class="fn c-bus" data-group="bus"><div class="sig">inWindow() → bool</div><p>Returns <code>fingerPresent</code>. Used to decide whether a beat or interval counts toward the current cycle.</p><div class="by">Called by: <code>addInterval()</code>, <code>rejectBeat()</code></div></div>
+    <div class="fn c-bus" data-group="bus"><div class="sig">sortFloat(a, n)</div><p>Insertion sort for up to 8 values. One shared sort for both intervals and ratios, to save flash.</p><div class="by">Called by: <code>medianOfInts()</code>, <code>computeBPM()</code>, <code>updateSpO2()</code></div></div>
+    <div class="fn c-bus" data-group="bus"><div class="sig">medianOfInts(src, n) → uint</div><p>Copies integers into a float array, sorts it and returns the middle value.</p><div class="by">Called by: <code>addInterval()</code>, <code>onPulse()</code></div></div>
+
+    <div class="fn c-heart" data-group="heart"><div class="sig">processSample(ir, red)</div><p>The heart of the program: settling and LED tuning, baseline removal, Butterworth filter, clipping, motion and signal-lost checks, slope tracking and the peak/valley detector.</p><div class="by">Called by: <code>handleSample()</code></div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">lowPass(x, s[]) → float</div><p>2nd-order Butterworth low-pass filter at 5 Hz. <code>s[]</code> holds the last two inputs and outputs.</p><div class="by">Called by: <code>processSample()</code></div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">tunedPower(level, power) → byte</div><p>Returns the LED current that would bring <code>level</code> to 150,000, limited to 0x04 to 0x7F. Returns the same power if the level is already in range.</p><div class="by">Called by: <code>processSample()</code> while settling</div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">setLedPowers(irP, redP)</div><p>Sends a new LED current to the sensor, only for the LED that changed.</p><div class="by">Called by: <code>processSample()</code>, <code>resetMeasurement()</code></div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">onPulse(amplitude, redAmplitude, beatTime)</div><p>Runs the quality checks on a candidate beat, then turns accepted beats into intervals, splitting gaps left by missed beats.</p><div class="by">Called by: <code>processSample()</code> when a peak is confirmed</div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">addInterval(interval)</div><p>Rejects intervals more than 25% from the median, clears the history after 3 odd ones in a row, stores good ones in the ring of 8 and the cycle total.</p><div class="by">Called by: <code>onPulse()</code></div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">rejectBeat()</div><p>Adds 1 to <code>beatsRejectedCycle</code>.</p><div class="by">Called by: <code>onPulse()</code></div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">computeBPM() → int</div><p>Trimmed mean of the last 8 intervals (drops shortest and longest once there are 5), converted to BPM.</p><div class="by">Called by: <code>updateEverySecond()</code></div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">averageBPM(sum, count) → int</div><p>BPM from a total of intervals: <code>60000 × count ÷ sum</code>. Used for the 30 s average.</p><div class="by">Called by: <code>loop()</code> at each cycle end</div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">signalLost()</div><p>Forgets the learned pulse size, the last beat time, the intervals and the ratios, after 3 s with no beat.</p><div class="by">Called by: <code>processSample()</code></div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">resetDetector()</div><p>Puts every filter, flag and detector variable back to its starting value and clears intervals and ratios.</p><div class="by">Called by: <code>resetMeasurement()</code></div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">clearIntervals()</div><p>Empties the ring of 8 intervals and the odd-interval streak.</p><div class="by">Called by: <code>resetDetector()</code>, <code>signalLost()</code>, <code>addInterval()</code></div></div>
+    <div class="fn c-heart" data-group="heart"><div class="sig">signalStatus() → byte</div><p>Returns 0 ok (or settling), 3 clipped, 2 moving, 1 weak, checked in that order.</p><div class="by">Called by: <code>updateEverySecond()</code>, <code>drawMeasurementScreen()</code></div></div>
+
+    <div class="fn c-oxy" data-group="oxy"><div class="sig">updateSpO2(irAmp, redAmp)</div><p>Computes R for one beat, keeps the last 8, takes the median and converts it to SpO2 inside the 90 to 97 display window.</p><div class="by">Called by: <code>onPulse()</code></div></div>
+    <div class="fn c-oxy" data-group="oxy"><div class="sig">clearRatios()</div><p>Empties the ratio history and sets SpO2 back to 0.</p><div class="by">Called by: <code>resetDetector()</code>, <code>signalLost()</code></div></div>
+
+    <div class="fn c-temp" data-group="temp"><div class="sig">readMLX16(reg, &amp;raw) → bool</div><p>Reads one 16-bit register from the MLX90614 with a repeated start. Returns false if the sensor does not answer.</p><div class="by">Called by: <code>updateTemperature()</code>, <code>setup()</code></div></div>
+    <div class="fn c-temp" data-group="temp"><div class="sig">updateTemperature()</div><p>Every 500 ms, reads the object temperature and converts it to tenths of a degree with integer maths.</p><div class="by">Called by: <code>loop()</code></div></div>
+    <div class="fn c-temp" data-group="temp"><div class="sig">appendTemp(buf)</div><p>Adds the temperature as text, like <code>36.4</code>, or <code>--</code> before the first reading.</p><div class="by">Called by: both draw functions</div></div>
+
+    <div class="fn c-disp" data-group="disp"><div class="sig">updateEverySecond(clockSec)</div><p>Once a second: recomputes BPM, beeps if there is a value, updates SpO2, tracks cycle statistics and prints the Serial line.</p><div class="by">Called by: <code>loop()</code></div></div>
+    <div class="fn c-disp" data-group="disp"><div class="sig">printCycleSummary()</div><p>Prints the <code>--- 30s AVG ---</code> block: average BPM, used/rejected intervals, average SpO2.</p><div class="by">Called by: <code>loop()</code> at each cycle end</div></div>
+    <div class="fn c-disp" data-group="disp"><div class="sig">drawWelcomeScreen()</div><p>Draws the welcome screen with the live temperature.</p><div class="by">Called by: <code>loop()</code> every 100 ms with no finger</div></div>
+    <div class="fn c-disp" data-group="disp"><div class="sig">drawMeasurementScreen()</div><p>Builds the text for BPM, line 2, temperature, SpO2 and the clock, then draws them with the heart and the wave.</p><div class="by">Called by: <code>loop()</code> every 100 ms</div></div>
+    <div class="fn c-disp" data-group="disp"><div class="sig">updateWaveform()</div><p>Shifts the 64-point wave left and adds the next idle or spike point from flash.</p><div class="by">Called by: <code>loop()</code> every 25 ms</div></div>
+    <div class="fn c-disp" data-group="disp"><div class="sig">beatFeedback()</div><p>Fills the heart icon and starts a spike in the wave.</p><div class="by">Called by: <code>onPulse()</code></div></div>
+    <div class="fn c-disp" data-group="disp"><div class="sig">drawHeartSmall(x, y, filled)</div><p>Draws a 14 × 15 pixel heart, filled with boxes or as an outline of pixels.</p><div class="by">Called by: both draw functions</div></div>
+    <div class="fn c-disp" data-group="disp"><div class="sig">drawThermoSmall(x, y)</div><p>Draws a small thermometer icon: a frame, a line and a filled bulb.</p><div class="by">Called by: <code>drawWelcomeScreen()</code></div></div>
+    <div class="fn c-disp" data-group="disp"><div class="sig">appendInt(buf, v)</div><p>Adds a whole number as text to a buffer. Much smaller in flash than <code>sprintf</code>.</p><div class="by">Called by: draw functions, <code>appendTemp()</code></div></div>
+    <div class="fn c-disp" data-group="disp"><div class="sig">statusWord(s) / statusMessage(s)</div><p>Turn a status number into the short Serial word (<code>weak</code>) or the screen text (<em>Weak pulse</em>).</p><div class="by">Called by: <code>updateEverySecond()</code>, <code>drawMeasurementScreen()</code></div></div>
+  </div>
+  <p class="empty" id="fn-empty" hidden>No function matches that search.</p>
+</section>
+
+<!-- 11 STATE -->
+<section id="state">
+  <div class="eyebrow">11 · Memory</div>
+  <h2>State variables</h2>
+  <p>The global variables that carry information between loop passes, grouped by job.</p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Group</th><th>Variables</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>Finger</td><td><code>fingerPresent</code>, <code>fingerOnCount</code>, <code>fingerOffCount</code></td><td>Finger state and the debounce counters.</td></tr>
+      <tr><td>Cycle</td><td><code>measurementStart</code>, <code>cycleIndex</code>, <code>lastAvg</code>, <code>avgAvailable</code>, <code>intervalSumCycle</code>, <code>intervalCountCycle</code></td><td>The rolling 30 s average.</td></tr>
+      <tr><td>Counters</td><td><code>beatsRejectedCycle</code>, <code>intervalsRejectedCycle</code>, <code>samplesLost</code>, <code>min/maxBPMCycle</code>, <code>spo2SumCycle</code></td><td>Quality and statistics for the cycle.</td></tr>
+      <tr><td>Shown values</td><td><code>shownBPM</code>, <code>shownSpO2</code>, <code>currentSpO2</code>, <code>currentTempTenths</code>, <code>lastSecond</code></td><td>What the screen and Serial show, refreshed each second.</td></tr>
+      <tr><td>Time and LEDs</td><td><code>sampleClock</code>, <code>lastIR</code>, <code>irPower</code>, <code>redPower</code>, <code>tuneSteps</code>, <code>tuneTick</code>, <code>skipSamples</code></td><td>Sample-based clock and LED auto-tune.</td></tr>
+      <tr><td>Filters</td><td><code>irDC</code>, <code>redDC</code>, <code>irAC</code>, <code>redAC</code>, <code>irLP[4]</code>, <code>redLP[4]</code>, <code>settleUntil</code>, <code>filtersReady</code></td><td>Baselines, cleaned signals and filter memory.</td></tr>
+      <tr><td>Quality</td><td><code>motionUntil</code>, <code>saturatedUntil</code>, <code>motionRefDC</code>, <code>lastPerfusion</code>, <code>weakPulse</code></td><td>Motion, clipping and weak-pulse flags.</td></tr>
+      <tr><td>Detector</td><td><code>lookingForPeak</code>, <code>haveValley</code>, <code>extremeIR</code>, <code>valleyIR</code>, <code>pulseAmplitude</code>, <code>bigStreak</code>, <code>lastBeatTime</code>, <code>lastActivity</code></td><td>Peak/valley state machine and learned pulse size.</td></tr>
+      <tr><td>Beat timing</td><td><code>maxSlope</code>, <code>maxSlopeTime</code>, <code>slopeBeforeMax</code>, <code>slopeAfterMax</code>, <code>needSlopeAfter</code></td><td>The steepest-rise point and its neighbours.</td></tr>
+      <tr><td>History</td><td><code>ibi[8]</code>, <code>ratios[8]</code> with their counts and heads</td><td>Ring buffers of the last 8 intervals and SpO2 ratios.</td></tr>
+      <tr><td>Screen</td><td><code>ecgWave[64]</code>, <code>spikeStep</code>, <code>idlePos</code>, <code>heartFlash</code>, timers</td><td>Wave animation, heart flash and redraw timers.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- 12 NOTES -->
+<section id="notes">
+  <div class="eyebrow">12 · Things to know</div>
+  <h2>Things to know about this version</h2>
+  <p>These are not bugs that stop the device from working, but they are worth knowing when you describe the project or change the code.</p>
+  <div class="two">
+    <div class="callout c-disp"><strong>The beep is once a second</strong><p>The tone is played in <code>updateEverySecond()</code>, not on each heartbeat. Your project PDF describes one beep per heartbeat. To beep on every beat instead, move the <code>tone()</code> line into <code>beatFeedback()</code>.</p></div>
+    <div class="callout c-oxy"><strong>SpO2 is shown inside 90 to 97%</strong><p>Values above 97 show as 97 and values below 90 show as <code>--</code>. Mention this in any report, and use <code>Rx1000</code> on Serial for the real ratio.</p></div>
+    <div class="callout c-bus"><strong>Some values are counted but never printed</strong><p><code>samplesLost</code>, <code>beatsRejectedCycle</code> and <code>min/maxBPMCycle</code> are tracked but not shown. <code>IRREGULAR_LIMIT</code> is not used, and <code>mlxFound</code> only sets the startup message. You could print them or delete them to free flash.</p></div>
+    <div class="callout c-heart"><strong>CLOCK_FIX is still 1.000</strong><p>Every BPM is multiplied by it. Leave it unless repeated tests show the sensor clock differs from real time by more than 0.5%.</p></div>
+  </div>
+</section>
+
+<!-- 13 GLOSSARY -->
+<section id="glossary">
+  <div class="eyebrow">13 · Words</div>
+  <h2>Glossary</h2>
+  <dl class="gloss">
+    <dt>PPG</dt><dd>Photoplethysmography: measuring blood volume changes with light. It is what the MAX30102 does.</dd>
+    <dt>DC and AC</dt><dd>DC is the large, steady part of the light reading. AC is the small ripple caused by each heartbeat.</dd>
+    <dt>Perfusion index</dt><dd>The pulse size as a percentage of the DC level. Low means weak blood flow, often from cold fingers or pressing too hard.</dd>
+    <dt>FIFO</dt><dd>"First in, first out": the sensor's 32-sample memory that holds readings until the Nano collects them.</dd>
+    <dt>I²C</dt><dd>A two-wire bus (SDA data, SCL clock) shared by several devices, each with its own address.</dd>
+    <dt>Hysteresis</dt><dd>A minimum change required before the detector switches state, so small wiggles do not count as peaks or valleys.</dd>
+    <dt>IBI</dt><dd>Inter-beat interval: the time between two heartbeats in milliseconds. BPM = 60,000 ÷ IBI.</dd>
+    <dt>Dicrotic notch</dt><dd>A small second bump in each pulse, caused by the aortic valve closing. It must not be counted as a beat.</dd>
+    <dt>Trimmed mean</dt><dd>An average taken after dropping the smallest and largest values.</dd>
+    <dt>Median</dt><dd>The middle value after sorting. One extreme value cannot move it much.</dd>
+    <dt>Butterworth filter</dt><dd>A smooth low-pass filter: it lets slow changes (heartbeats) through and removes fast noise.</dd>
+    <dt>PROGMEM</dt><dd>Keeps constant data in the Nano's flash instead of its small 2 KB RAM.</dd>
+  </dl>
+</section>
+
+<footer>Heart Monitor v3.3 · Arduino Nano + MAX30102 + GY-906 + SSD1306 · Educational prototype, not a medical device.</footer>
+</main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+try { if (window.hljs) document.querySelectorAll('pre code').forEach(function (el) { hljs.highlightElement(el); }); } catch (e) {}
+(function () {
+  var input = document.getElementById('fn-search');
+  var buttons = Array.prototype.slice.call(document.querySelectorAll('.fn-tools button'));
+  var cards = Array.prototype.slice.call(document.querySelectorAll('#fns .fn'));
+  var empty = document.getElementById('fn-empty');
+  var group = 'all';
+  function apply() {
+    var q = input.value.trim().toLowerCase();
+    var shown = 0;
+    cards.forEach(function (c) {
+      var ok = (group === 'all' || c.dataset.group === group) && (!q || c.textContent.toLowerCase().indexOf(q) !== -1);
+      c.hidden = !ok;
+      if (ok) shown++;
+    });
+    empty.hidden = shown !== 0;
+  }
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () {
+      group = b.dataset.group;
+      buttons.forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+      apply();
+    });
+  });
+  input.addEventListener('input', apply);
+})();
+</script>
